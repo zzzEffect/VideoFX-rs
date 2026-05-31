@@ -1,0 +1,19 @@
+[package]
+name = "video-fx-ae-plugin"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib"]
+
+[target.'cfg(any(windows, target_os="macos"))'.dependencies]
+after-effects = {git = "https://github.com/virtualritz/after-effects", rev = "0e0b197"}
+premiere = {git = "https://github.com/virtualritz/after-effects", rev = "0e0b197"}
+video-fx = { path = "../videofx" }
+
+[build-dependencies]
+pipl = {git = "https://github.com/virtualritz/after-effects", rev = "0e0b197"}
+
+[lints]
+workspace = true

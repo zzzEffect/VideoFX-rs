@@ -1,0 +1,20 @@
+[package]
+name = "video-fx-openfx-plugin"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[dependencies]
+video-fx = { path = "../videofx" }
+
+[build-dependencies]
+bindgen = "0.71"
+
+[lib]
+crate-type = ["cdylib"]
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+trybuild = "1.0"
