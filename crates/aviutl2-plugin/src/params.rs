@@ -1,26 +1,36 @@
 use aviutl2::filter::{
-    FilterConfigCheckSection, FilterConfigCheckbox, FilterConfigGroup, FilterConfigItem,
-    FilterConfigSelect, FilterConfigSelectItem, FilterConfigTrack,
+    FilterConfigCheckSection, FilterConfigCheckbox, FilterConfigColor, FilterConfigColorValue,
+    FilterConfigGroup, FilterConfigItem, FilterConfigSelect, FilterConfigSelectItem,
+    FilterConfigTrack,
 };
-use video_fx::i18n::I18nKey;
-use video_fx::settings::{EnumValue, SettingDescriptor, SettingKind, Settings};
+use example_effects::i18n::{self, ExTrKey, Lang};
+use example_effects::settings::{EnumValue, SettingDescriptor, SettingKind, Settings};
 
-pub fn build_config_items<T: Settings + Clone>() -> Vec<FilterConfigItem> {
+pub fn build_config_items<T: Settings<Key = i18n::ExTrKey> + Clone>() -> Vec<FilterConfigItem> {
+    // AviUtl2's default language is Japanese. When the host is set to Japanese,
+    // it uses the built-in parameter names directly (does NOT read .aul2 files).
+    // So we force Japanese as the built-in language, and .aul2 files handle
+    // translations for other languages.
+    let saved_lang = i18n::lang();
+    i18n::set_lang(Lang::Ja);
+
     let descriptors = T::setting_descriptors();
     let defaults = T::default();
     let mut items = Vec::new();
     for descriptor in descriptors.iter() {
         add_descriptor(descriptor, &defaults, &mut items);
     }
+
+    i18n::set_lang(saved_lang);
     items
 }
 
-fn add_descriptor<T: Settings + Clone>(
+fn add_descriptor<T: Settings<Key = i18n::ExTrKey> + Clone>(
     descriptor: &SettingDescriptor<T>,
     defaults: &T,
     items: &mut Vec<FilterConfigItem>,
 ) {
-    let label = descriptor.label_key.en().to_string();
+    let label = i18n::tr(descriptor.label_key).to_string();
 
     match &descriptor.kind {
         SettingKind::FloatRange { range, .. } => {
@@ -72,7 +82,7 @@ fn add_descriptor<T: Settings + Clone>(
             let select_items: Vec<FilterConfigSelectItem> = options
                 .iter()
                 .map(|option| FilterConfigSelectItem {
-                    name: option.label_key.en().to_string(),
+                    name: i18n::tr(option.label_key).to_string(),
                     value: option.index as i32,
                 })
                 .collect();
@@ -89,6 +99,43 @@ fn add_descriptor<T: Settings + Clone>(
                 name: label,
                 value: default_idx,
                 items: select_items,
+            }));
+        }
+        SettingKind::ColorRGBA { r_id, g_id, b_id, a_id } => {
+            let dr = defaults.get_field::<f32>(r_id).unwrap_or(1.0);
+            let dg = defaults.get_field::<f32>(g_id).unwrap_or(1.0);
+            let db = defaults.get_field::<f32>(b_id).unwrap_or(1.0);
+            let da = defaults.get_field::<f32>(a_id).unwrap_or(1.0);
+            let rgb =
+                ((dr.clamp(0.0, 1.0) * 255.0).round() as u32) << 16
+                    | ((dg.clamp(0.0, 1.0) * 255.0).round() as u32) << 8
+                    | (db.clamp(0.0, 1.0) * 255.0).round() as u32;
+            items.push(FilterConfigItem::Color(FilterConfigColor {
+                name: label,
+                value: FilterConfigColorValue(rgb),
+            }));
+            // Alpha channel as separate track since AviUtl2 Color has no alpha
+            let a_label = i18n::tr(ExTrKey::ParamBlendAmount).to_string();
+            items.push(FilterConfigItem::Track(FilterConfigTrack {
+                name: a_label,
+                value: da as f64,
+                range: 0.0..=1.0,
+                step: 0.01,
+                zero_display: None,
+                slider_ratio: 1.0,
+            }));
+        }
+        SettingKind::ColorRGB { r_id, g_id, b_id } => {
+            let dr = defaults.get_field::<f32>(r_id).unwrap_or(1.0);
+            let dg = defaults.get_field::<f32>(g_id).unwrap_or(1.0);
+            let db = defaults.get_field::<f32>(b_id).unwrap_or(1.0);
+            let rgb =
+                ((dr.clamp(0.0, 1.0) * 255.0).round() as u32) << 16
+                    | ((dg.clamp(0.0, 1.0) * 255.0).round() as u32) << 8
+                    | (db.clamp(0.0, 1.0) * 255.0).round() as u32;
+            items.push(FilterConfigItem::Color(FilterConfigColor {
+                name: label,
+                value: FilterConfigColorValue(rgb),
             }));
         }
         SettingKind::Group { children } => {

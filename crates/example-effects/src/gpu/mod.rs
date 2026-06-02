@@ -1,6 +1,6 @@
+pub mod color_adjustment;
 pub mod device;
 pub mod solid_blend;
-pub mod standard;
 
 use std::borrow::Cow;
 

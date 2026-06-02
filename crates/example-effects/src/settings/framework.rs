@@ -153,6 +153,8 @@ pub enum SettingKind<T: Settings> {
     FloatRange { range: RangeInclusive<f32>, logarithmic: bool },
     Boolean,
     Group { children: Vec<SettingDescriptor<T>> },
+    ColorRGBA { r_id: SettingID<T>, g_id: SettingID<T>, b_id: SettingID<T>, a_id: SettingID<T> },
+    ColorRGB { r_id: SettingID<T>, g_id: SettingID<T>, b_id: SettingID<T> },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -274,15 +276,36 @@ impl<T: Settings> sval::Value for SettingsAndList<'_, '_, T> {
     fn stream<'sval, S: sval::Stream<'sval> + ?Sized>(&'sval self, stream: &mut S) -> sval::Result {
         stream.map_begin(None)?;
         for descriptor in self.list.all_descriptors() {
-            stream.map_key_begin()?; stream.text_begin(Some(descriptor.id.name.len()))?; stream.text_fragment(descriptor.id.name)?; stream.text_end()?; stream.map_key_end()?;
-            stream.map_value_begin()?;
             match &descriptor.kind {
-                SettingKind::Enumeration { .. } => stream.u32(self.settings.get_field::<EnumValue>(&descriptor.id).unwrap().0)?,
-                SettingKind::Percentage { .. } | SettingKind::FloatRange { .. } => stream.f32(self.settings.get_field::<f32>(&descriptor.id).unwrap())?,
-                SettingKind::IntRange { .. } => stream.i32(self.settings.get_field::<i32>(&descriptor.id).unwrap())?,
-                SettingKind::Boolean | SettingKind::Group { .. } => stream.bool(self.settings.get_field::<bool>(&descriptor.id).unwrap())?,
+                SettingKind::ColorRGBA { r_id, g_id, b_id, a_id } => {
+                    for (id, name) in [(r_id, "color_r"), (g_id, "color_g"), (b_id, "color_b"), (a_id, "color_a")] {
+                        stream.map_key_begin()?; stream.text_begin(Some(name.len()))?; stream.text_fragment(name)?; stream.text_end()?; stream.map_key_end()?;
+                        stream.map_value_begin()?;
+                        stream.f32(self.settings.get_field::<f32>(id).unwrap())?;
+                        stream.map_value_end()?;
+                    }
+                }
+                SettingKind::ColorRGB { r_id, g_id, b_id } => {
+                    for (id, name) in [(r_id, "tint_r"), (g_id, "tint_g"), (b_id, "tint_b")] {
+                        stream.map_key_begin()?; stream.text_begin(Some(name.len()))?; stream.text_fragment(name)?; stream.text_end()?; stream.map_key_end()?;
+                        stream.map_value_begin()?;
+                        stream.f32(self.settings.get_field::<f32>(id).unwrap())?;
+                        stream.map_value_end()?;
+                    }
+                }
+                _ => {
+                    stream.map_key_begin()?; stream.text_begin(Some(descriptor.id.name.len()))?; stream.text_fragment(descriptor.id.name)?; stream.text_end()?; stream.map_key_end()?;
+                    stream.map_value_begin()?;
+                    match &descriptor.kind {
+                        SettingKind::Enumeration { .. } => stream.u32(self.settings.get_field::<EnumValue>(&descriptor.id).unwrap().0)?,
+                        SettingKind::Percentage { .. } | SettingKind::FloatRange { .. } => stream.f32(self.settings.get_field::<f32>(&descriptor.id).unwrap())?,
+                        SettingKind::IntRange { .. } => stream.i32(self.settings.get_field::<i32>(&descriptor.id).unwrap())?,
+                        SettingKind::Boolean | SettingKind::Group { .. } => stream.bool(self.settings.get_field::<bool>(&descriptor.id).unwrap())?,
+                        _ => {}
+                    }
+                    stream.map_value_end()?;
+                }
             }
-            stream.map_value_end()?;
         }
         stream.map_key_begin()?; stream.text_begin(Some("version".len()))?; stream.text_fragment("version")?; stream.text_end()?; stream.map_key_end()?;
         stream.map_value_begin()?; stream.u32(1)?; stream.map_value_end()?;
@@ -348,6 +371,16 @@ impl<T: Settings> SettingsList<T> {
                 SettingKind::IntRange { range, .. } => { json.get_and_expect::<i32>(key)?.map(|n| settings.set_field::<i32>(&descriptor.id, n.clamp(*range.start(), *range.end()))); }
                 SettingKind::Boolean => { json.get_and_expect::<bool>(key)?.map(|b| settings.set_field::<bool>(&descriptor.id, b)); }
                 SettingKind::Group { children, .. } => { json.get_and_expect::<bool>(key)?.map(|b| settings.set_field::<bool>(&descriptor.id, b)); Self::settings_from_json(json, children, settings)?; }
+                SettingKind::ColorRGBA { r_id, g_id, b_id, a_id } => {
+                    for (id, name) in [(r_id, "color_r"), (g_id, "color_g"), (b_id, "color_b"), (a_id, "color_a")] {
+                        json.get_and_expect::<f32>(name)?.map(|n| settings.set_field::<f32>(id, n.clamp(0.0, 1.0)));
+                    }
+                }
+                SettingKind::ColorRGB { r_id, g_id, b_id } => {
+                    for (id, name) in [(r_id, "tint_r"), (g_id, "tint_g"), (b_id, "tint_b")] {
+                        json.get_and_expect::<f32>(name)?.map(|n| settings.set_field::<f32>(id, n.clamp(0.0, 1.0)));
+                    }
+                }
             }
         }
         Ok(())

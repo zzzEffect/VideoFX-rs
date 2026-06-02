@@ -7,6 +7,7 @@ struct FullUniforms {
     height: u32,
     blend_mode: u32,
     blend_amount: f32,
+    blend_attenuation: f32,
     solid_r: f32,
     solid_g: f32,
     solid_b: f32,
@@ -15,6 +16,20 @@ struct FullUniforms {
 @group(0) @binding(0) var<storage, read>       src_pixels: array<u32>;
 @group(0) @binding(1) var<uniform>              u: FullUniforms;
 @group(0) @binding(2) var<storage, read_write>  dst_pixels: array<u32>;
+
+fn blend_alpha_channel(src_a: f32, a: f32, inv: f32, blend_mode: u32) -> f32 {
+    let blended = switch blend_mode {
+        0u => src_a * inv + a,
+        1u => src_a * inv + src_a * a,
+        2u => src_a * inv + (1.0 - (1.0 - src_a) * (1.0 - a)) * a,
+        3u => {
+            let ov = select(1.0 - 2.0 * (1.0 - src_a) * (1.0 - a), 2.0 * src_a * a, src_a < 0.5);
+            src_a * inv + ov * a;
+        }
+        default => src_a,
+    };
+    return src_a + (blended - src_a) * (1.0 - u.blend_attenuation);
+}
 
 @compute @workgroup_size(16, 16, 1)
 fn solid_blend_main(@builtin(global_invocation_id) id: vec3<u32>) {
@@ -31,7 +46,7 @@ fn solid_blend_main(@builtin(global_invocation_id) id: vec3<u32>) {
     let sr = byte_to_float((packed >> 0u) & 0xFFu);
     let sg = byte_to_float((packed >> 8u) & 0xFFu);
     let sb = byte_to_float((packed >> 16u) & 0xFFu);
-    let sa = (packed >> 24u) & 0xFFu;
+    let sa = byte_to_float((packed >> 24u) & 0xFFu);
 
     let a = u.blend_amount;
     let inv = 1.0 - a;
@@ -72,9 +87,12 @@ fn solid_blend_main(@builtin(global_invocation_id) id: vec3<u32>) {
     dg = clamp(dg, 0.0, 1.0);
     db = clamp(db, 0.0, 1.0);
 
+    let da = clamp(blend_alpha_channel(sa, a, inv, u.blend_mode), 0.0, 1.0);
+
     let out_r = u32(dr * 255.0 + 0.5);
     let out_g = u32(dg * 255.0 + 0.5);
     let out_b = u32(db * 255.0 + 0.5);
+    let out_a = u32(da * 255.0 + 0.5);
 
-    dst_pixels[i] = (sa << 24u) | (out_b << 16u) | (out_g << 8u) | out_r;
+    dst_pixels[i] = (out_a << 24u) | (out_b << 16u) | (out_g << 8u) | out_r;
 }

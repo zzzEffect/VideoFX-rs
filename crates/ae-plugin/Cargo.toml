@@ -4,13 +4,18 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT"
 
+[features]
+default = ["color-adjustment"]
+color-adjustment = []
+solid-blend = []
+
 [lib]
 crate-type = ["cdylib"]
 
 [target.'cfg(any(windows, target_os="macos"))'.dependencies]
 after-effects = {git = "https://github.com/virtualritz/after-effects", rev = "0e0b197"}
 premiere = {git = "https://github.com/virtualritz/after-effects", rev = "0e0b197"}
-video-fx = { path = "../videofx" }
+example-effects = { path = "../example-effects" }
 
 [build-dependencies]
 pipl = {git = "https://github.com/virtualritz/after-effects", rev = "0e0b197"}

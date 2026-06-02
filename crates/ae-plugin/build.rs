@@ -9,11 +9,31 @@ fn main() {
         const EFFECT_VERSION_MAJOR: u32 = 0;
         const EFFECT_VERSION_MINOR: u32 = 1;
         const EFFECT_VERSION_PATCH: u32 = 0;
+
+        #[cfg(feature = "color-adjustment")]
+        let (effect_name, effect_category, match_name) = (
+            "VideoFX Example Color Adjustment",
+            "VideoFX Example",
+            "video-fx-example-color-adjustment",
+        );
+        #[cfg(feature = "solid-blend")]
+        let (effect_name, effect_category, match_name) = (
+            "VideoFX Example Solid Blend",
+            "VideoFX Example",
+            "video-fx-example-solid-blend",
+        );
+        #[cfg(not(any(feature = "color-adjustment", feature = "solid-blend")))]
+        let (effect_name, effect_category, match_name) = (
+            "VideoFX Example Color Adjustment",
+            "VideoFX Example",
+            "video-fx-example-color-adjustment",
+        );
+
         use pipl::*;
         pipl::plugin_build(vec![
             Property::Kind(PIPLType::AEEffect),
-            Property::Name("Example Effect"),
-            Property::Category("Example"),
+            Property::Name(effect_name),
+            Property::Category(effect_category),
 
             #[cfg(target_os = "windows")]
             Property::CodeWin64X86("EffectMain"),
@@ -46,7 +66,7 @@ fn main() {
                 OutFlags2::SupportsThreadedRendering |
                 OutFlags2::SupportsGetFlattenedSequenceData
             ),
-            Property::AE_Effect_Match_Name("video-fx"),
+            Property::AE_Effect_Match_Name(match_name),
             Property::AE_Reserved_Info(8),
             Property::AE_Effect_Support_URL("https://example.com/plugin"),
         ]);

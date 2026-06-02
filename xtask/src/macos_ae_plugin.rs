@@ -1,5 +1,5 @@
 //! Builds and bundles the After Effects plugin for macOS.
-//! Adapted from https://github.com/AdrianEddy/after-effects/blob/cbcaf4b/AdobePlugin.just.
+//! Builds two variants — Color Adjustment and Solid Blend — via Cargo features.
 
 use clap::builder::PathBufValueParser;
 
@@ -12,11 +12,21 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
+const EFFECTS: &[(&str, &str)] = &[
+    (
+        "color-adjustment",
+        "VideoFXExampleColorAdjustment",
+    ),
+    (
+        "solid-blend",
+        "VideoFXExampleSolidBlend",
+    ),
+];
+
 pub fn command() -> clap::Command {
     clap::Command::new("macos-ae-plugin")
         .about(
-            "Builds and bundles the After Effects plugin for macOS, handling Apple-specific \
-             things like creating a universal binary and a bundle.",
+            "Builds and bundles both After Effects plugins for macOS (Color Adjustment + Solid Blend).",
         )
         .arg(
             clap::Arg::new("release")
@@ -48,26 +58,28 @@ pub fn command() -> clap::Command {
         .arg(
             clap::Arg::new("destdir")
                 .long("destdir")
-                .help("The directory that the After Effects plugin bundle will be output to")
+                .help("The directory that the After Effects plugin bundles will be output to")
                 .value_parser(PathBufValueParser::new())
                 .default_value(workspace_dir().plus("build").as_os_str().to_owned()),
         )
 }
 
-/// Build the After Effects plugin for a specific target, returning the paths to the plugin library
-/// and the Carbon resource file (.rsrc).
 fn build_plugin_for_target(
     target: &Target,
+    feature: &str,
     release_mode: bool,
 ) -> std::io::Result<(PathBuf, PathBuf)> {
     println!(
-        "Building After Effects plugin for target {}",
+        "Building AE plugin [{}] for target {}",
+        feature,
         target.target_triple
     );
 
     let mut cargo_args: Vec<_> = vec![
         String::from("build"),
         String::from("--package=video-fx-ae-plugin"),
+        String::from("--features"),
+        String::from(feature),
         String::from("--target"),
         target.target_triple.to_string(),
     ];
@@ -79,16 +91,15 @@ fn build_plugin_for_target(
         .status()
         .expect_success()?;
 
-    let mut target_dir_path = workspace_dir().to_path_buf();
-    target_dir_path.extend(&[
-        "target",
-        target.target_triple,
-        if cargo_args.contains(&String::from("--release")) {
-            "release"
-        } else {
-            "debug"
-        },
-    ]);
+    let profile = if cargo_args.contains(&String::from("--release")) {
+        "release"
+    } else {
+        "debug"
+    };
+
+    let target_dir_path = workspace_dir()
+        .to_path_buf()
+        .plus_iter(["target", target.target_triple, profile]);
 
     let mut built_library_path = target_dir_path.clone();
     built_library_path.push(target.library_prefix.to_owned() + "video_fx_ae_plugin");
@@ -96,83 +107,105 @@ fn build_plugin_for_target(
 
     let built_rsrc_path = target_dir_path.plus("video-fx-ae-plugin.rsrc");
 
-    Ok((built_library_path, built_rsrc_path))
+    // Copy to unique name so subsequent feature builds don't overwrite
+    let lib_saved = target_dir_path.plus(format!("video_fx_ae_plugin_{feature}"));
+    let rsrc_saved = target_dir_path.plus(format!("video-fx-ae-plugin_{feature}.rsrc"));
+    if built_library_path.exists() {
+        fs::copy(&built_library_path, &lib_saved)?;
+    }
+    if built_rsrc_path.exists() {
+        fs::copy(&built_rsrc_path, &rsrc_saved)?;
+    }
+
+    Ok((lib_saved, rsrc_saved))
+}
+
+fn create_bundle(
+    build_dir: &PathBuf,
+    bundle_name: &str,
+    lib_path: &PathBuf,
+    rsrc_path: &PathBuf,
+) -> Result<(), Box<dyn Error>> {
+    let plugin_dir = build_dir.plus(format!("{bundle_name}.plugin"));
+
+    let _ = fs::remove_dir_all(&plugin_dir);
+
+    let contents = plugin_dir.plus("Contents");
+    fs::create_dir_all(&contents)?;
+
+    let macos_dir = contents.plus("MacOS");
+    fs::create_dir_all(&macos_dir)?;
+
+    let resources = contents.plus("Resources");
+    fs::create_dir_all(&resources)?;
+
+    fs::write(contents.plus("PkgInfo"), "eFKTFXTC")?;
+
+    let mut info_plist = plist::dictionary::Dictionary::new();
+    info_plist.insert(
+        "CFBundleIdentifier".to_string(),
+        plist::Value::from(format!("com.example.afterfx.{bundle_name}")),
+    );
+    info_plist.insert(
+        "CFBundlePackageType".to_string(),
+        plist::Value::from("eFKT"),
+    );
+    info_plist.insert("CFBundleSignature".to_string(), plist::Value::from("FXTC"));
+
+    plist::Value::Dictionary(info_plist).to_file_xml(contents.plus("Info.plist"))?;
+
+    fs::copy(lib_path, macos_dir.plus("VideoFx"))?;
+    fs::copy(rsrc_path, resources.plus("VideoFx.rsrc"))?;
+
+    println!("Bundled {bundle_name}.plugin");
+
+    Ok(())
 }
 
 pub fn main(args: &clap::ArgMatches) -> Result<(), Box<dyn Error>> {
     let release_mode = args.get_flag("release");
+    let build_dir = args.get_one::<PathBuf>("destdir").unwrap();
 
-    let build_dir_path = args.get_one::<PathBuf>("destdir").unwrap();
-    let plugin_dir_path = build_dir_path.plus("VideoFx.plugin");
+    for &(feature, bundle_name) in EFFECTS {
+        let (lib_path, rsrc_path) = if args.get_flag("macos-universal") {
+            let (x86_lib, x86_rsrc) =
+                build_plugin_for_target(MACOS_X86_64, feature, release_mode)?;
+            let (arm_lib, _) =
+                build_plugin_for_target(MACOS_AARCH64, feature, release_mode)?;
 
-    // Clean up the previous build.
-    let _ = fs::remove_dir_all(&plugin_dir_path);
+            let merged = std::env::temp_dir().plus(format!(
+                "example-ae-{feature}-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis()
+            ));
 
-    let contents_dir_path = plugin_dir_path.plus("Contents");
-    fs::create_dir_all(&contents_dir_path)?;
+            Command::new("lipo")
+                .args(&[
+                    OsString::from("-create"),
+                    OsString::from("-output"),
+                    merged.clone().into(),
+                    x86_lib.into(),
+                    arm_lib.into(),
+                ])
+                .status()
+                .expect_success()?;
 
-    let macos_dir_path = contents_dir_path.plus("MacOS");
-    fs::create_dir_all(&macos_dir_path)?;
+            (merged, x86_rsrc)
+        } else {
+            let target_triple = args.get_one::<String>("target").unwrap();
+            let target = TARGETS
+                .iter()
+                .find(|t| t.target_triple == target_triple)
+                .unwrap_or_else(|| panic!("Target \"{}\" is not supported", target_triple));
 
-    let resources_dir_path = contents_dir_path.plus("Resources");
-    fs::create_dir_all(&resources_dir_path)?;
+            build_plugin_for_target(target, feature, release_mode)?
+        };
 
-    fs::write(contents_dir_path.plus("PkgInfo"), "eFKTFXTC")?;
+        create_bundle(build_dir, bundle_name, &lib_path, &rsrc_path)?;
+    }
 
-    let mut info_plist_contents = plist::dictionary::Dictionary::new();
-    info_plist_contents.insert(
-        "CFBundleIdentifier".to_string(),
-        plist::Value::from("com.example.afterfx"),
-    );
-    info_plist_contents.insert(
-        "CFBundlePackageType".to_string(),
-        plist::Value::from("eFKT"),
-    );
-    info_plist_contents.insert("CFBundleSignature".to_string(), plist::Value::from("FXTC"));
-
-    plist::Value::Dictionary(info_plist_contents)
-        .to_file_xml(contents_dir_path.plus("Info.plist"))?;
-
-    let (built_library_path, built_rsrc_path) = if args.get_flag("macos-universal") {
-        let x86_64_target = MACOS_X86_64;
-        let aarch64_target = MACOS_AARCH64;
-
-        let (x86_64_lib_path, x86_64_rsrc_path) =
-            build_plugin_for_target(x86_64_target, release_mode)?;
-        let (aarch64_lib_path, _) = build_plugin_for_target(aarch64_target, release_mode)?;
-
-        let dst_path = std::env::temp_dir().plus(format!(
-            "example-ae-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_millis()
-        ));
-
-        Command::new("lipo")
-            .args(&[
-                OsString::from("-create"),
-                OsString::from("-output"),
-                dst_path.clone().into(),
-                x86_64_lib_path.into(),
-                aarch64_lib_path.into(),
-            ])
-            .status()
-            .expect_success()?;
-
-        (dst_path, x86_64_rsrc_path)
-    } else {
-        let target_triple = args.get_one::<String>("target").unwrap();
-        let target = TARGETS
-            .iter()
-            .find(|candidate_target| candidate_target.target_triple == target_triple)
-            .unwrap_or_else(|| panic!("Your target \"{}\" is not supported", target_triple));
-
-        build_plugin_for_target(target, release_mode)?
-    };
-
-    fs::copy(built_library_path, macos_dir_path.plus("VideoFx"))?;
-    fs::copy(built_rsrc_path, resources_dir_path.plus("VideoFx.rsrc"))?;
-
+    println!("\nBoth AE plugins built successfully.");
     Ok(())
 }

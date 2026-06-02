@@ -1,8 +1,8 @@
-use example_effect::ExampleEffect;
+use example_effects::ColorAdjustment;
 
 #[test]
 fn default_parameters_are_identity() {
-    let effect = ExampleEffect::default();
+    let effect = ColorAdjustment::default();
 
     let width = 4;
     let height = 2;
@@ -18,10 +18,10 @@ fn default_parameters_are_identity() {
 
 #[test]
 fn effect_actually_transforms_pixels() {
-    let mut effect = ExampleEffect::default();
+    let mut effect = ColorAdjustment::default();
     effect.brightness = 0.5;
     effect.invert_colors = true;
-    effect.color_preset = example_effect::settings::standard::ColorPreset::Sepia;
+    effect.color_preset = example_effects::settings::color_adjustment::ColorPreset::Sepia;
 
     let width = 2;
     let height = 2;
@@ -38,7 +38,7 @@ fn effect_actually_transforms_pixels() {
 
 #[test]
 fn different_dimensions() {
-    let effect = ExampleEffect::default();
+    let effect = ColorAdjustment::default();
 
     for (w, h) in [(1, 1), (16, 9), (64, 64), (1920, 1080)] {
         let len = w * h * 4;

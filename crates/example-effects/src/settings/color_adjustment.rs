@@ -38,7 +38,7 @@ impl Default for AdvancedSettings {
 
 #[derive(FullSettings, Clone, Debug, PartialEq)]
 #[non_exhaustive]
-pub struct ExampleEffect {
+pub struct ColorAdjustment {
     pub brightness: f32,
     pub invert_colors: bool,
     pub tint_r: f32,
@@ -49,7 +49,7 @@ pub struct ExampleEffect {
     pub color_preset: ColorPreset,
 }
 
-impl Default for ExampleEffect {
+impl Default for ColorAdjustment {
     fn default() -> Self {
         Self {
             brightness: 1.0,
@@ -70,11 +70,12 @@ impl Default for ExampleEffect {
 #[rustfmt::skip]
 pub mod setting_id {
     use crate::{setting_id, settings::SettingID};
-    use super::ExampleEffectFullSettings;
-    type SID = SettingID<ExampleEffectFullSettings>;
+    use super::ColorAdjustmentFullSettings;
+    type SID = SettingID<ColorAdjustmentFullSettings>;
 
     pub const BRIGHTNESS:     SID = setting_id!("brightness", brightness);
     pub const INVERT_COLORS:  SID = setting_id!("invert_colors", invert_colors);
+    pub const TINT:           SID = setting_id!("tint", tint_r);
     pub const TINT_R:         SID = setting_id!("tint_r", tint_r);
     pub const TINT_G:         SID = setting_id!("tint_g", tint_g);
     pub const TINT_B:         SID = setting_id!("tint_b", tint_b);
@@ -88,7 +89,7 @@ pub mod setting_id {
 // Settings trait impl
 // ---------------------------------------------------------------------------
 
-impl Settings for ExampleEffectFullSettings {
+impl Settings for ColorAdjustmentFullSettings {
     type Key = ExTrKey;
 
     fn setting_descriptors() -> Box<[SettingDescriptor<Self>]> {
@@ -109,22 +110,14 @@ impl Settings for ExampleEffectFullSettings {
                 id: setting_id::INVERT_COLORS,
             },
             SettingDescriptor {
-                label_key: ExTrKey::ParamTintRed,
-                description_key: Some(ExTrKey::ParamTintRedDesc),
-                kind: SettingKind::Percentage { logarithmic: false },
-                id: setting_id::TINT_R,
-            },
-            SettingDescriptor {
-                label_key: ExTrKey::ParamTintGreen,
-                description_key: Some(ExTrKey::ParamTintGreenDesc),
-                kind: SettingKind::Percentage { logarithmic: false },
-                id: setting_id::TINT_G,
-            },
-            SettingDescriptor {
-                label_key: ExTrKey::ParamTintBlue,
-                description_key: Some(ExTrKey::ParamTintBlueDesc),
-                kind: SettingKind::Percentage { logarithmic: false },
-                id: setting_id::TINT_B,
+                label_key: ExTrKey::ParamTint,
+                description_key: Some(ExTrKey::ParamTintDesc),
+                kind: SettingKind::ColorRGB {
+                    r_id: setting_id::TINT_R,
+                    g_id: setting_id::TINT_G,
+                    b_id: setting_id::TINT_B,
+                },
+                id: setting_id::TINT,
             },
             SettingDescriptor {
                 label_key: ExTrKey::ParamAdvanced,

@@ -8,7 +8,7 @@ license = "MIT"
 crate-type = ["cdylib"]
 
 [dependencies]
-video-fx = { path = "../videofx", default-features = false }
+example-effects = { path = "../example-effects", default-features = false }
 aviutl2 = "0.31"
 anyhow = "1"
 tracing = "0.1"

@@ -4,9 +4,9 @@ use aviutl2::filter::{
     FilterConfigItem, FilterPlugin, FilterPluginFlags, FilterPluginTable, FilterProcVideo,
 };
 use aviutl2::generic::{GenericPlugin, GenericPluginTable, HostAppHandle, SubPlugin};
-use video_fx::settings::Settings;
-use video_fx::{
-    ExampleEffect, ExampleEffectFullSettings, SolidColorBlend, SolidColorBlendFullSettings,
+use example_effects::settings::Settings;
+use example_effects::{
+    ColorAdjustment, ColorAdjustmentFullSettings, SolidColorBlend, SolidColorBlendFullSettings,
 };
 
 #[cfg(gpu_available)]
@@ -15,13 +15,15 @@ use aviutl2::filter::{ReadableImageResource, ShaderTargetResource, WritableImage
 mod aul2;
 mod params;
 
-pub use aul2::{generate_aul2_en, generate_aul2_zh_cn, write_aul2_to};
+pub use aul2::{
+    generate_aul2_en, generate_aul2_ko, generate_aul2_zh_cn, write_aul2_to,
+};
 
 use params::build_config_items;
 
 #[aviutl2::plugin(GenericPlugin)]
 struct VideoFxPlugin {
-    example_filter: SubPlugin<ExampleFilter>,
+    color_adjustment_filter: SubPlugin<ColorAdjustmentFilter>,
     blend_filter: SubPlugin<BlendFilter>,
 }
 
@@ -33,11 +35,12 @@ impl GenericPlugin for VideoFxPlugin {
             .with_writer(aviutl2::logger::AviUtl2LogWriter)
             .try_init();
 
-        video_fx::i18n::set_lang(video_fx::i18n::detect_system_lang());
-        let example_filter = SubPlugin::<ExampleFilter>::new_filter_plugin(&info)?;
+        example_effects::i18n::set_lang(example_effects::i18n::detect_system_lang());
+        let color_adjustment_filter =
+            SubPlugin::<ColorAdjustmentFilter>::new_filter_plugin(&info)?;
         let blend_filter = SubPlugin::<BlendFilter>::new_filter_plugin(&info)?;
         Ok(Self {
-            example_filter,
+            color_adjustment_filter,
             blend_filter,
         })
     }
@@ -50,38 +53,38 @@ impl GenericPlugin for VideoFxPlugin {
     }
 
     fn register(&mut self, registry: &mut HostAppHandle) {
-        registry.register_filter_plugin(&self.example_filter);
+        registry.register_filter_plugin(&self.color_adjustment_filter);
         registry.register_filter_plugin(&self.blend_filter);
     }
 }
 
 #[aviutl2::plugin(FilterPlugin)]
-struct ExampleFilter;
+struct ColorAdjustmentFilter;
 
-impl FilterPlugin for ExampleFilter {
+impl FilterPlugin for ColorAdjustmentFilter {
     fn new(_info: AviUtl2Info) -> Result<Self> {
         Ok(Self)
     }
 
     fn plugin_info(&self) -> FilterPluginTable {
         FilterPluginTable {
-            name: "VideoFX Example Effect".into(),
-            label: Some("VideoFX".into()),
+            name: "VideoFX Example Color Adjustment".into(),
+            label: Some("VideoFX Example".into()),
             information: "Brightness, tint, contrast, saturation adjustments.".into(),
             flags: aviutl2::bitflag!(FilterPluginFlags {
                 video: true,
                 filter: true,
             }),
-            config_items: build_config_items::<ExampleEffectFullSettings>(),
+            config_items: build_config_items::<ColorAdjustmentFullSettings>(),
         }
     }
 
     fn proc_video(&self, config: &[FilterConfigItem], video: &mut FilterProcVideo) -> Result<()> {
-        let mut settings = ExampleEffectFullSettings::default();
+        let mut settings = ColorAdjustmentFullSettings::default();
         read_config(config, &mut settings);
-        let effect: ExampleEffect = settings.into();
+        let effect: ColorAdjustment = settings.into();
 
-        // GPU compute shader path (unorm float4 → confirmed format)
+        // GPU compute shader path
         #[cfg(gpu_available)]
         {
             match try_gpu_render(&effect, video) {
@@ -115,7 +118,7 @@ impl FilterPlugin for ExampleFilter {
 }
 
 #[cfg(gpu_available)]
-fn try_gpu_render(effect: &ExampleEffect, video: &mut FilterProcVideo) -> Result<()> {
+fn try_gpu_render(effect: &ColorAdjustment, video: &mut FilterProcVideo) -> Result<()> {
     use std::mem::size_of;
 
     let w = video.video_object.width;
@@ -171,9 +174,6 @@ fn try_gpu_render(effect: &ExampleEffect, video: &mut FilterProcVideo) -> Result
     let thread_x = (w + 15) / 16;
     let thread_y = (h + 15) / 16;
 
-    // GPU-to-GPU copy: Object → named resource for SRV access.
-    // Object is not directly readable as SRV in compute shaders,
-    // so we copy it to a named resource that IS SRV-accessible.
     video.copy_image_resource(
         &ReadableImageResource::Object,
         &WritableImageResource::Resource("video_fx_input".into()),
@@ -201,8 +201,8 @@ impl FilterPlugin for BlendFilter {
 
     fn plugin_info(&self) -> FilterPluginTable {
         FilterPluginTable {
-            name: "VideoFX Solid Color Blend".into(),
-            label: Some("VideoFX".into()),
+            name: "VideoFX Example Solid Blend".into(),
+            label: Some("VideoFX Example".into()),
             information: "Blend a solid color with configurable blend modes.".into(),
             flags: aviutl2::bitflag!(FilterPluginFlags {
                 video: true,
@@ -239,12 +239,12 @@ fn read_config<T: Settings>(config: &[FilterConfigItem], settings: &mut T) {
 }
 
 fn read_descriptors<T: Settings>(
-    descriptors: &[video_fx::settings::SettingDescriptor<T>],
+    descriptors: &[example_effects::settings::SettingDescriptor<T>],
     config: &[FilterConfigItem],
     settings: &mut T,
     idx: &mut usize,
 ) {
-    use video_fx::settings::{EnumValue, SettingKind};
+    use example_effects::settings::{EnumValue, SettingKind};
 
     for desc in descriptors {
         match &desc.kind {
@@ -272,6 +272,29 @@ fn read_descriptors<T: Settings>(
                 {
                     let enum_val = EnumValue(item.value as u32);
                     let _ = settings.set_field::<EnumValue>(&desc.id, enum_val);
+                }
+                *idx += 1;
+            }
+            SettingKind::ColorRGBA { r_id, g_id, b_id, a_id } => {
+                // params.rs emits: Color (RGB) + Track (alpha)
+                if let Some(FilterConfigItem::Color(color)) = config.get(*idx) {
+                    let (r, g, b) = color.value.to_rgb();
+                    let _ = settings.set_field::<f32>(r_id, r as f32 / 255.0);
+                    let _ = settings.set_field::<f32>(g_id, g as f32 / 255.0);
+                    let _ = settings.set_field::<f32>(b_id, b as f32 / 255.0);
+                }
+                *idx += 1;
+                if let Some(FilterConfigItem::Track(track)) = config.get(*idx) {
+                    let _ = settings.set_field::<f32>(a_id, track.value as f32);
+                }
+                *idx += 1;
+            }
+            SettingKind::ColorRGB { r_id, g_id, b_id } => {
+                if let Some(FilterConfigItem::Color(color)) = config.get(*idx) {
+                    let (r, g, b) = color.value.to_rgb();
+                    let _ = settings.set_field::<f32>(r_id, r as f32 / 255.0);
+                    let _ = settings.set_field::<f32>(g_id, g as f32 / 255.0);
+                    let _ = settings.set_field::<f32>(b_id, b as f32 / 255.0);
                 }
                 *idx += 1;
             }

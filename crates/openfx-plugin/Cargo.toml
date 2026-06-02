@@ -5,7 +5,7 @@ edition = "2024"
 license = "MIT"
 
 [dependencies]
-video-fx = { path = "../videofx" }
+example-effects = { path = "../example-effects" }
 
 [build-dependencies]
 bindgen = "0.71"

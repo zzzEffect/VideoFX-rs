@@ -6,7 +6,7 @@ use crate::RECIP_255;
 impl SolidColorBlend {
     /// Blend the entire image with a solid color using the selected blend mode.
     ///
-    /// The buffer is RGBA interleaved, 1 byte per channel. Alpha is copied through unchanged.
+    /// The buffer is RGBA interleaved, 1 byte per channel.
     pub fn apply_effect(&self, src: &[u8], dst: &mut [u8], width: usize, height: usize) {
         let len = width * height * 4;
         if src.len() < len || dst.len() < len || width == 0 || height == 0 {
@@ -33,6 +33,24 @@ impl SolidColorBlend {
         }
 
         self.apply_effect_cpu(src, dst, width, height);
+    }
+
+    fn blend_alpha(&self, src_a: f32, af: f32, inv: f32) -> f32 {
+        let blended = match self.blend_mode {
+            BlendMode::Normal => src_a * inv + af,
+            BlendMode::Multiply => src_a * inv + src_a * af,
+            BlendMode::Screen => src_a * inv + (1.0 - (1.0 - src_a) * (1.0 - af)) * af,
+            BlendMode::Overlay => {
+                let ov = if src_a < 0.5 {
+                    2.0 * src_a * af
+                } else {
+                    1.0 - 2.0 * (1.0 - src_a) * (1.0 - af)
+                };
+                src_a * inv + ov * af
+            }
+        };
+        let sa = 1.0 - self.blend_attenuation.clamp(0.0, 1.0);
+        src_a + (blended - src_a) * sa
     }
 
     fn apply_effect_cpu(&self, src: &[u8], dst: &mut [u8], width: usize, _height: usize) {
@@ -66,7 +84,11 @@ impl SolidColorBlend {
                             row[o + 2] = (src[i + 2] as f32 * RECIP_255 * inv + sb * af)
                                 .clamp(0.0, 1.0)
                                 .mul_add(255.0, 0.5) as u8;
-                            row[o + 3] = src[i + 3];
+                            let src_a = src[i + 3] as f32 * RECIP_255;
+                            row[o + 3] = self
+                                .blend_alpha(src_a, af, inv)
+                                .clamp(0.0, 1.0)
+                                .mul_add(255.0, 0.5) as u8;
                         }
                     });
             }
@@ -90,7 +112,11 @@ impl SolidColorBlend {
                             row[o + 2] = (ib * inv + ib * sb * af)
                                 .clamp(0.0, 1.0)
                                 .mul_add(255.0, 0.5) as u8;
-                            row[o + 3] = src[i + 3];
+                            let src_a = src[i + 3] as f32 * RECIP_255;
+                            row[o + 3] = self
+                                .blend_alpha(src_a, af, inv)
+                                .clamp(0.0, 1.0)
+                                .mul_add(255.0, 0.5) as u8;
                         }
                     });
             }
@@ -114,7 +140,11 @@ impl SolidColorBlend {
                             row[o + 2] = (ib * inv + (1.0 - (1.0 - ib) * (1.0 - sb)) * af)
                                 .clamp(0.0, 1.0)
                                 .mul_add(255.0, 0.5) as u8;
-                            row[o + 3] = src[i + 3];
+                            let src_a = src[i + 3] as f32 * RECIP_255;
+                            row[o + 3] = self
+                                .blend_alpha(src_a, af, inv)
+                                .clamp(0.0, 1.0)
+                                .mul_add(255.0, 0.5) as u8;
                         }
                     });
             }
@@ -138,7 +168,11 @@ impl SolidColorBlend {
                             row[o + 2] = (ib * inv + overlay(ib, sb) * af)
                                 .clamp(0.0, 1.0)
                                 .mul_add(255.0, 0.5) as u8;
-                            row[o + 3] = src[i + 3];
+                            let src_a = src[i + 3] as f32 * RECIP_255;
+                            row[o + 3] = self
+                                .blend_alpha(src_a, af, inv)
+                                .clamp(0.0, 1.0)
+                                .mul_add(255.0, 0.5) as u8;
                         }
                     });
             }

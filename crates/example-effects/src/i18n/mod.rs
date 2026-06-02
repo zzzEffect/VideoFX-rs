@@ -1,5 +1,5 @@
-//! Shared i18n runtime for the Example Effect plugin family.
-
+//! Shared i18n runtime for the VideoFX Example plugin family.
+//!
 //! Language is detected once at plugin load time and never changes during the session.
 
 use std::ffi::CStr;
@@ -10,6 +10,8 @@ pub mod keys;
 pub use i18n_keys::I18nKey;
 pub use keys::ExTrKey;
 
+mod ja;
+mod ko;
 mod zh_cn;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -17,6 +19,8 @@ mod zh_cn;
 pub enum Lang {
     En = 0,
     ZhCn = 1,
+    Ja = 2,
+    Ko = 3,
 }
 
 static CURRENT_LANG: AtomicU8 = AtomicU8::new(Lang::En as u8);
@@ -29,6 +33,8 @@ pub fn lang() -> Lang {
     match CURRENT_LANG.load(Ordering::Acquire) {
         0 => Lang::En,
         1 => Lang::ZhCn,
+        2 => Lang::Ja,
+        3 => Lang::Ko,
         _ => Lang::En,
     }
 }
@@ -38,6 +44,8 @@ pub fn tr(key: ExTrKey) -> &'static str {
     match lang() {
         Lang::En => key.en(),
         Lang::ZhCn => zh_cn::translate_cstr(key).to_str().unwrap(),
+        Lang::Ja => ja::translate_cstr(key).to_str().unwrap(),
+        Lang::Ko => ko::translate_cstr(key).to_str().unwrap(),
     }
 }
 
@@ -46,10 +54,12 @@ pub fn tr_cstr(key: ExTrKey) -> &'static CStr {
     match lang() {
         Lang::En => key.en_cstr(),
         Lang::ZhCn => zh_cn::translate_cstr(key),
+        Lang::Ja => ja::translate_cstr(key),
+        Lang::Ko => ko::translate_cstr(key),
     }
 }
 
-/// Map a host-provided locale tag (e.g., `"zh_CN"`, `"en_US"`) to [`Lang`].
+/// Map a host-provided locale tag (e.g., `"zh_CN"`, `"ja_JP"`) to [`Lang`].
 ///
 /// Returns `None` for unsupported languages — callers should default to
 /// [`Lang::En`] rather than falling back to OS-level detection, so the host
@@ -59,6 +69,10 @@ pub fn lang_from_locale_tag(tag: &str) -> Option<Lang> {
     let s = tag.to_lowercase();
     if s.starts_with("zh") || s.contains("chinese") {
         Some(Lang::ZhCn)
+    } else if s.starts_with("ja") || s.contains("japanese") {
+        Some(Lang::Ja)
+    } else if s.starts_with("ko") || s.contains("korean") {
+        Some(Lang::Ko)
     } else {
         None
     }
@@ -70,6 +84,10 @@ pub fn detect_system_lang() -> Lang {
         let s = s.to_lowercase();
         if s.starts_with("zh") || s.contains("chinese") {
             Some(Lang::ZhCn)
+        } else if s.starts_with("ja") || s.contains("japanese") {
+            Some(Lang::Ja)
+        } else if s.starts_with("ko") || s.contains("korean") {
+            Some(Lang::Ko)
         } else {
             None
         }

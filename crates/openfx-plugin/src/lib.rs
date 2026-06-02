@@ -15,12 +15,12 @@ use std::{
     },
 };
 
-use video_fx::{
+use example_effects::{
     i18n,
     settings::{
         EnumValue, ExTrKey, SettingDescriptor, SettingID, SettingKind, Settings, SettingsList,
     },
-    SolidColorBlend, SolidColorBlendFullSettings,
+    ColorAdjustment, ColorAdjustmentFullSettings, SolidColorBlend, SolidColorBlendFullSettings,
 };
 
 use bindings::*;
@@ -30,21 +30,86 @@ unsafe impl Send for OfxPlugin {}
 unsafe impl Sync for OfxPlugin {}
 
 // ---------------------------------------------------------------------------
-// Globals
+// EffectKind trait — allows generic dispatch for both effect types
 // ---------------------------------------------------------------------------
 
-static PLUGIN_INFO: OnceLock<OfxPlugin> = OnceLock::new();
-static SHARED_DATA: OnceLock<SharedData> = OnceLock::new();
+trait EffectKind: 'static {
+    type FullSettings: Settings<Key = ExTrKey> + Clone + Default + 'static;
+
+    fn shared() -> &'static SharedData<Self::FullSettings>;
+    fn label_key() -> ExTrKey;
+    fn plugin_identifier() -> &'static CStr;
+    fn apply_effect(
+        settings: &Self::FullSettings,
+        src: &[u8],
+        dst: &mut [u8],
+        width: usize,
+        height: usize,
+    );
+}
+
+struct ColorAdjustmentKind;
+struct SolidBlendKind;
+
+static SHARED_CA: OnceLock<SharedData<ColorAdjustmentFullSettings>> = OnceLock::new();
+static SHARED_SB: OnceLock<SharedData<SolidColorBlendFullSettings>> = OnceLock::new();
+
+impl EffectKind for ColorAdjustmentKind {
+    type FullSettings = ColorAdjustmentFullSettings;
+
+    fn shared() -> &'static SharedData<Self::FullSettings> {
+        SHARED_CA.get().expect("SharedData not initialized")
+    }
+
+    fn label_key() -> ExTrKey {
+        ExTrKey::ParamColorAdjustmentName
+    }
+
+    fn plugin_identifier() -> &'static CStr {
+        c"com.example:VideoFXExampleColorAdjustment"
+    }
+
+    fn apply_effect(
+        settings: &Self::FullSettings,
+        src: &[u8],
+        dst: &mut [u8],
+        width: usize,
+        height: usize,
+    ) {
+        let effect: ColorAdjustment = settings.into();
+        effect.apply_effect(src, dst, width, height);
+    }
+}
+
+impl EffectKind for SolidBlendKind {
+    type FullSettings = SolidColorBlendFullSettings;
+
+    fn shared() -> &'static SharedData<Self::FullSettings> {
+        SHARED_SB.get().expect("SharedData not initialized")
+    }
+
+    fn label_key() -> ExTrKey {
+        ExTrKey::ParamSolidBlendName
+    }
+
+    fn plugin_identifier() -> &'static CStr {
+        c"com.example:VideoFXExampleSolidBlend"
+    }
+
+    fn apply_effect(
+        settings: &Self::FullSettings,
+        src: &[u8],
+        dst: &mut [u8],
+        width: usize,
+        height: usize,
+    ) {
+        let effect: SolidColorBlend = settings.into();
+        effect.apply_effect(src, dst, width, height);
+    }
+}
 
 // ---------------------------------------------------------------------------
-// OFX parameter name constants
-// ---------------------------------------------------------------------------
-
-const RGBA_PARAM_NAME: &CStr = c"color";
-const BLEND_MODE_PARAM_NAME: &CStr = c"blend_mode";
-
-// ---------------------------------------------------------------------------
-// HostInfo — stored during set_host
+// SharedData — one instance per effect kind
 // ---------------------------------------------------------------------------
 
 #[allow(dead_code)]
@@ -57,31 +122,23 @@ struct HostInfo {
     ) -> *const c_void,
 }
 
-// ---------------------------------------------------------------------------
-// SharedData — initialized once on set_host
-// ---------------------------------------------------------------------------
-
-struct SharedData {
+struct SharedData<T: Settings> {
     #[allow(dead_code)]
     host_info: HostInfo,
     property_suite: &'static OfxPropertySuiteV1,
     image_effect_suite: &'static OfxImageEffectSuiteV1,
     parameter_suite: &'static OfxParameterSuiteV1,
-    settings_list: SettingsList<SolidColorBlendFullSettings>,
+    settings_list: SettingsList<T>,
     supports_multiple_clip_depths: AtomicBool,
     #[allow(dead_code)]
-    strings: HashMap<
-        SettingID<SolidColorBlendFullSettings>,
-        (CString, CString, Option<CString>, Option<CString>),
-    >,
+    strings: HashMap<SettingID<T>, (CString, CString, Option<CString>, Option<CString>)>,
     #[allow(dead_code)]
-    menu_item_strings:
-        HashMap<(SettingID<SolidColorBlendFullSettings>, u32), (CString, Option<CString>)>,
+    menu_item_strings: HashMap<(SettingID<T>, u32), (CString, Option<CString>)>,
 }
 
 type OfxResult<T> = Result<T, OfxStatus>;
 
-impl SharedData {
+impl<T: Settings<Key = ExTrKey> + Clone + Default> SharedData<T> {
     pub unsafe fn new(host_info: HostInfo) -> OfxResult<Self> {
         let property_suite = (host_info.fetch_suite)(
             host_info.host as *const _ as _,
@@ -99,7 +156,7 @@ impl SharedData {
             1,
         ) as *const OfxParameterSuiteV1;
 
-        let settings_list = SettingsList::<SolidColorBlendFullSettings>::new();
+        let settings_list = SettingsList::<T>::new();
         let mut strings = HashMap::new();
         let mut menu_item_strings = HashMap::new();
         for descriptor in settings_list.all_descriptors() {
@@ -151,9 +208,12 @@ impl SharedData {
     }
 }
 
-fn shared() -> &'static SharedData {
-    SHARED_DATA.get().expect("SharedData not initialized; set_host must be called first")
-}
+// ---------------------------------------------------------------------------
+// Plugin info — two plugins in one bundle
+// ---------------------------------------------------------------------------
+
+static PLUGIN_INFO_CA: OnceLock<OfxPlugin> = OnceLock::new();
+static PLUGIN_INFO_SB: OnceLock<OfxPlugin> = OnceLock::new();
 
 // ---------------------------------------------------------------------------
 // Entry points
@@ -161,84 +221,122 @@ fn shared() -> &'static SharedData {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn OfxGetNumberOfPlugins() -> c_int {
-    1
+    2
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn OfxGetPlugin(nth: c_int) -> *const OfxPlugin {
-    if nth != 0 {
-        return ptr::null();
-    }
-
-    // Prevent panics from being silently swallowed by the host
     std::panic::set_hook(Box::new(|info| {
         println!("{info:?}");
     }));
 
-    let plugin_info = PLUGIN_INFO.get_or_init(|| OfxPlugin {
-        pluginApi: kOfxImageEffectPluginApi.as_ptr(),
-        apiVersion: 1,
-        pluginIdentifier: c"com.example:ExampleEffect".as_ptr(),
-        pluginVersionMajor: 0,
-        pluginVersionMinor: 1,
-        setHost: Some(set_host_info),
-        mainEntry: Some(main_entry),
-    });
-    plugin_info as *const _
+    match nth {
+        0 => {
+            let plugin_info = PLUGIN_INFO_CA.get_or_init(|| OfxPlugin {
+                pluginApi: kOfxImageEffectPluginApi.as_ptr(),
+                apiVersion: 1,
+                pluginIdentifier: ColorAdjustmentKind::plugin_identifier().as_ptr(),
+                pluginVersionMajor: 0,
+                pluginVersionMinor: 1,
+                setHost: Some(set_host_info_ca),
+                mainEntry: Some(main_entry_ca),
+            });
+            plugin_info as *const _
+        }
+        1 => {
+            let plugin_info = PLUGIN_INFO_SB.get_or_init(|| OfxPlugin {
+                pluginApi: kOfxImageEffectPluginApi.as_ptr(),
+                apiVersion: 1,
+                pluginIdentifier: SolidBlendKind::plugin_identifier().as_ptr(),
+                pluginVersionMajor: 0,
+                pluginVersionMinor: 1,
+                setHost: Some(set_host_info_sb),
+                mainEntry: Some(main_entry_sb),
+            });
+            plugin_info as *const _
+        }
+        _ => ptr::null(),
+    }
 }
 
 // ---------------------------------------------------------------------------
-// set_host_info
+// set_host_info — one per effect kind
 // ---------------------------------------------------------------------------
 
-unsafe fn set_host_info_inner(host: *mut OfxHost) -> OfxResult<()> {
-    video_fx::i18n::set_lang(video_fx::i18n::detect_system_lang());
+unsafe fn set_host_info_inner<T: Settings<Key = ExTrKey> + Clone + Default>(
+    host: *mut OfxHost,
+    cell: &OnceLock<SharedData<T>>,
+) -> OfxResult<()> {
+    example_effects::i18n::set_lang(example_effects::i18n::detect_system_lang());
     if let Some(host_struct) = host.as_ref() {
         let host = host_struct.host.as_ref().ok_or(OfxStat::kOfxStatFailed)?;
         let fetch_suite = host_struct.fetchSuite.ok_or(OfxStat::kOfxStatFailed)?;
-        let new_shared_data = SharedData::new(HostInfo { host, fetch_suite })?;
-        SHARED_DATA.get_or_init(|| new_shared_data);
+        let new_shared_data = SharedData::<T>::new(HostInfo { host, fetch_suite })?;
+        cell.get_or_init(|| new_shared_data);
         Ok(())
     } else {
         Err(OfxStat::kOfxStatFailed)
     }
 }
 
-unsafe extern "C" fn set_host_info(host: *mut OfxHost) {
-    let _ = set_host_info_inner(host);
+unsafe extern "C" fn set_host_info_ca(host: *mut OfxHost) {
+    let _ = set_host_info_inner::<ColorAdjustmentFullSettings>(host, &SHARED_CA);
+}
+
+unsafe extern "C" fn set_host_info_sb(host: *mut OfxHost) {
+    let _ = set_host_info_inner::<SolidColorBlendFullSettings>(host, &SHARED_SB);
 }
 
 // ---------------------------------------------------------------------------
-// main_entry — action dispatcher
+// main_entry — one per effect kind
 // ---------------------------------------------------------------------------
 
-unsafe extern "C" fn main_entry(
+unsafe extern "C" fn main_entry_ca(
     action: *const c_char,
     handle: *const c_void,
     inArgs: OfxPropertySetHandle,
     outArgs: OfxPropertySetHandle,
 ) -> OfxStatus {
-    if action.is_null() { return OfxStat::kOfxStatFailed; }
+    main_entry_generic::<ColorAdjustmentKind>(action, handle, inArgs, outArgs)
+}
+
+unsafe extern "C" fn main_entry_sb(
+    action: *const c_char,
+    handle: *const c_void,
+    inArgs: OfxPropertySetHandle,
+    outArgs: OfxPropertySetHandle,
+) -> OfxStatus {
+    main_entry_generic::<SolidBlendKind>(action, handle, inArgs, outArgs)
+}
+
+unsafe fn main_entry_generic<K: EffectKind>(
+    action: *const c_char,
+    handle: *const c_void,
+    inArgs: OfxPropertySetHandle,
+    outArgs: OfxPropertySetHandle,
+) -> OfxStatus {
+    if action.is_null() {
+        return OfxStat::kOfxStatFailed;
+    }
     let effect = handle as OfxImageEffectHandle;
     let action = CStr::from_ptr(action);
 
     let return_status: OfxResult<()> = if action == kOfxActionLoad {
-        action_load()
+        action_load_generic::<K>()
     } else if action == kOfxActionDescribe {
-        action_describe(effect)
+        action_describe_generic::<K>(effect)
     } else if action == kOfxImageEffectActionDescribeInContext {
-        action_describe_in_context(effect)
+        action_describe_in_context_generic::<K>(effect)
     } else if action == kOfxImageEffectActionGetRegionsOfInterest {
-        action_get_regions_of_interest(effect, inArgs, outArgs)
+        action_get_regions_of_interest_generic::<K>(effect, inArgs, outArgs)
     } else if action == kOfxImageEffectActionGetClipPreferences {
-        action_get_clip_preferences(outArgs)
+        action_get_clip_preferences_generic::<K>(outArgs)
     } else if action == kOfxActionCreateInstance || action == kOfxActionDestroyInstance {
-        // DaVinci Resolve requires these even as no-ops
         Ok(())
     } else if action == kOfxActionInstanceChanged {
-        action_instance_changed(effect, inArgs)
+        action_instance_changed_generic::<K>(effect, inArgs)
     } else if action == kOfxImageEffectActionRender {
-        action_render(effect, inArgs)
+        action_render_generic::<K>(effect, inArgs)
     } else {
         OfxResult::Err(OfxStat::kOfxStatReplyDefault)
     };
@@ -250,11 +348,11 @@ unsafe extern "C" fn main_entry(
 }
 
 // ---------------------------------------------------------------------------
-// Action handlers
+// Action handlers — generic over EffectKind
 // ---------------------------------------------------------------------------
 
-unsafe fn action_load() -> OfxResult<()> {
-    let data = shared();
+unsafe fn action_load_generic<K: EffectKind>() -> OfxResult<()> {
+    let data = K::shared();
     let propGetInt = data
         .property_suite
         .propGetInt
@@ -272,8 +370,10 @@ unsafe fn action_load() -> OfxResult<()> {
     Ok(())
 }
 
-unsafe fn action_describe(descriptor: OfxImageEffectHandle) -> OfxResult<()> {
-    let data = shared();
+unsafe fn action_describe_generic<K: EffectKind>(
+    descriptor: OfxImageEffectHandle,
+) -> OfxResult<()> {
+    let data = K::shared();
     let mut effectProps: OfxPropertySetHandle = ptr::null_mut();
     (data
         .image_effect_suite
@@ -290,13 +390,19 @@ unsafe fn action_describe(descriptor: OfxImageEffectHandle) -> OfxResult<()> {
         .propSetInt
         .ok_or(OfxStat::kOfxStatFailed)?;
 
-    propSetString(effectProps, kOfxPropLabel.as_ptr(), 0, i18n::tr_cstr(ExTrKey::ParamExampleEffectName).as_ptr()).ofx_ok()?;
+    propSetString(
+        effectProps,
+        kOfxPropLabel.as_ptr(),
+        0,
+        i18n::tr_cstr(K::label_key()).as_ptr(),
+    )
+    .ofx_ok()?;
 
     propSetString(
         effectProps,
         kOfxImageEffectPluginPropGrouping.as_ptr(),
         0,
-        c"Example".as_ptr(),
+        c"VideoFX Example".as_ptr(),
     )
     .ofx_ok()?;
 
@@ -356,8 +462,10 @@ unsafe fn action_describe(descriptor: OfxImageEffectHandle) -> OfxResult<()> {
     Ok(())
 }
 
-unsafe fn action_describe_in_context(descriptor: OfxImageEffectHandle) -> OfxResult<()> {
-    let data = shared();
+unsafe fn action_describe_in_context_generic<K: EffectKind>(
+    descriptor: OfxImageEffectHandle,
+) -> OfxResult<()> {
+    let data = K::shared();
     let clipDefine = data
         .image_effect_suite
         .clipDefine
@@ -366,10 +474,9 @@ unsafe fn action_describe_in_context(descriptor: OfxImageEffectHandle) -> OfxRes
         .image_effect_suite
         .getParamSet
         .ok_or(OfxStat::kOfxStatFailed)?;
-    let property_suite = data.property_suite;
-    let param_suite = data.parameter_suite;
 
-    let propSetString = property_suite
+    let propSetString = data
+        .property_suite
         .propSetString
         .ok_or(OfxStat::kOfxStatFailed)?;
 
@@ -414,60 +521,22 @@ unsafe fn action_describe_in_context(descriptor: OfxImageEffectHandle) -> OfxRes
     )
     .ofx_ok()?;
 
-    // Parameter set
+    // Parameter set — use generic map_params
     let mut param_set: OfxParamSetHandle = ptr::null_mut();
     getParamSet(descriptor, &mut param_set).ofx_ok()?;
 
-    let paramDefine = param_suite.paramDefine.ok_or(OfxStat::kOfxStatFailed)?;
-    let propSetDouble = property_suite.propSetDouble.ok_or(OfxStat::kOfxStatFailed)?;
-    let propSetInt = property_suite.propSetInt.ok_or(OfxStat::kOfxStatFailed)?;
-
-    // --- RGBA color parameter ---
-    // R, G, B = solid color; A = blend amount
-    let mut rgbaProps: OfxPropertySetHandle = ptr::null_mut();
-    paramDefine(
-        param_set,
-        kOfxParamTypeRGBA.as_ptr(),
-        RGBA_PARAM_NAME.as_ptr(),
-        &mut rgbaProps,
-    )
-    .ofx_ok()?;
-    propSetString(rgbaProps, kOfxPropLabel.as_ptr(), 0, i18n::tr_cstr(ExTrKey::ParamColor).as_ptr()).ofx_ok()?;
-    // Default: black with no blend (passthrough)
-    propSetDouble(rgbaProps, kOfxParamPropDefault.as_ptr(), 0, 0.0).ofx_ok()?; // R
-    propSetDouble(rgbaProps, kOfxParamPropDefault.as_ptr(), 1, 0.0).ofx_ok()?; // G
-    propSetDouble(rgbaProps, kOfxParamPropDefault.as_ptr(), 2, 0.0).ofx_ok()?; // B
-    propSetDouble(rgbaProps, kOfxParamPropDefault.as_ptr(), 3, 0.0).ofx_ok()?; // A
-
-    // --- Blend mode choice parameter ---
-    let defaults = SolidColorBlendFullSettings::default();
-    let default_mode = defaults.get_field::<EnumValue>(&data.settings_list.setting_descriptors[4].id)
-        .map_err(|_| OfxStat::kOfxStatFailed)?.0;
-    let mut modeProps: OfxPropertySetHandle = ptr::null_mut();
-    paramDefine(
-        param_set,
-        kOfxParamTypeChoice.as_ptr(),
-        BLEND_MODE_PARAM_NAME.as_ptr(),
-        &mut modeProps,
-    )
-    .ofx_ok()?;
-    propSetString(modeProps, kOfxPropLabel.as_ptr(), 0, i18n::tr_cstr(ExTrKey::ParamExampleBlendMode).as_ptr()).ofx_ok()?;
-    propSetString(modeProps, kOfxParamPropChoiceOption.as_ptr(), 0, i18n::tr_cstr(ExTrKey::MenuNormal).as_ptr()).ofx_ok()?;
-    propSetString(modeProps, kOfxParamPropChoiceOption.as_ptr(), 1, i18n::tr_cstr(ExTrKey::MenuMultiply).as_ptr()).ofx_ok()?;
-    propSetString(modeProps, kOfxParamPropChoiceOption.as_ptr(), 2, i18n::tr_cstr(ExTrKey::MenuScreen).as_ptr()).ofx_ok()?;
-    propSetString(modeProps, kOfxParamPropChoiceOption.as_ptr(), 3, i18n::tr_cstr(ExTrKey::MenuOverlay).as_ptr()).ofx_ok()?;
-    propSetInt(modeProps, kOfxParamPropDefault.as_ptr(), 0, default_mode as c_int).ofx_ok()?;
-    propSetString(modeProps, kOfxParamPropHint.as_ptr(), 0, i18n::tr_cstr(ExTrKey::ParamExampleBlendModeDesc).as_ptr()).ofx_ok()?;
+    let defaults = <K::FullSettings>::default();
+    map_params_generic::<K>(data, param_set, &K::shared().settings_list.setting_descriptors, &defaults, c"")?;
 
     Ok(())
 }
 
-unsafe fn action_get_regions_of_interest(
+unsafe fn action_get_regions_of_interest_generic<K: EffectKind>(
     effect: OfxImageEffectHandle,
     inArgs: OfxPropertySetHandle,
     outArgs: OfxPropertySetHandle,
 ) -> OfxResult<()> {
-    let data = shared();
+    let data = K::shared();
     let propGetDouble = data
         .property_suite
         .propGetDouble
@@ -486,13 +555,7 @@ unsafe fn action_get_regions_of_interest(
         .ok_or(OfxStat::kOfxStatFailed)?;
 
     let mut sourceClip: OfxImageClipHandle = ptr::null_mut();
-    clipGetHandle(
-        effect,
-        c"Source".as_ptr(),
-        &mut sourceClip,
-        ptr::null_mut(),
-    )
-    .ofx_ok()?;
+    clipGetHandle(effect, c"Source".as_ptr(), &mut sourceClip, ptr::null_mut()).ofx_ok()?;
     let mut sourceRoD = OfxRectD {
         x1: 0.0,
         x2: 0.0,
@@ -514,8 +577,10 @@ unsafe fn action_get_regions_of_interest(
     Ok(())
 }
 
-unsafe fn action_get_clip_preferences(outArgs: OfxPropertySetHandle) -> OfxResult<()> {
-    let data = shared();
+unsafe fn action_get_clip_preferences_generic<K: EffectKind>(
+    outArgs: OfxPropertySetHandle,
+) -> OfxResult<()> {
+    let data = K::shared();
     let propSetInt = data
         .property_suite
         .propSetInt
@@ -537,11 +602,11 @@ unsafe fn action_get_clip_preferences(outArgs: OfxPropertySetHandle) -> OfxResul
     Ok(())
 }
 
-unsafe fn action_instance_changed(
+unsafe fn action_instance_changed_generic<K: EffectKind>(
     _effect: OfxImageEffectHandle,
     inArgs: OfxPropertySetHandle,
 ) -> OfxResult<()> {
-    let data = shared();
+    let data = K::shared();
     let propGetInt = data
         .property_suite
         .propGetInt
@@ -554,14 +619,14 @@ unsafe fn action_instance_changed(
 }
 
 // ---------------------------------------------------------------------------
-// Render — solid color blend
+// Render — generic over EffectKind
 // ---------------------------------------------------------------------------
 
-unsafe fn action_render(
+unsafe fn action_render_generic<K: EffectKind>(
     effect: OfxImageEffectHandle,
     inArgs: OfxPropertySetHandle,
 ) -> OfxResult<()> {
-    let data = shared();
+    let data = K::shared();
 
     let clipGetHandle = data
         .image_effect_suite
@@ -605,9 +670,8 @@ unsafe fn action_render(
     let mut param_set: OfxParamSetHandle = ptr::null_mut();
     getParamSet(effect, &mut param_set).ofx_ok()?;
 
-    let mut settings = SolidColorBlendFullSettings::default();
-    apply_params(data, param_set, time, &data.settings_list.setting_descriptors, &mut settings)?;
-    let blend: SolidColorBlend = (&settings).into();
+    let mut settings = <K::FullSettings>::default();
+    apply_params_generic::<K>(data, param_set, time, &data.settings_list.setting_descriptors, &mut settings)?;
 
     // Get clip handles
     let mut srcClip: OfxImageClipHandle = ptr::null_mut();
@@ -628,7 +692,8 @@ unsafe fn action_render(
     propGetPointer(dstImg, kOfxImagePropData.as_ptr(), 0, &mut dstPtr).ofx_ok()?;
 
     // Get row bytes and bounds
-    let mut srcRowBytes: c_int = 0; let mut dstRowBytes: c_int = 0;
+    let mut srcRowBytes: c_int = 0;
+    let mut dstRowBytes: c_int = 0;
     propGetInt(srcImg, kOfxImagePropRowBytes.as_ptr(), 0, &mut srcRowBytes).ofx_ok()?;
     propGetInt(dstImg, kOfxImagePropRowBytes.as_ptr(), 0, &mut dstRowBytes).ofx_ok()?;
 
@@ -644,29 +709,23 @@ unsafe fn action_render(
     let src_stride = srcRowBytes.max(0) as usize;
     let dst_stride = dstRowBytes.max(0) as usize;
 
-    // Determine pixel depth from the source image
     let mut depth_ptr: *mut c_char = ptr::null_mut();
     let depth = (|| {
-        propGetString(
-            srcImg,
-            kOfxImageEffectPropPixelDepth.as_ptr(),
-            0,
-            &mut depth_ptr,
-        )
-        .ofx_ok()
-        .ok()?;
+        propGetString(srcImg, kOfxImageEffectPropPixelDepth.as_ptr(), 0, &mut depth_ptr)
+            .ofx_ok()
+            .ok()?;
         let s = CStr::from_ptr(depth_ptr);
         if s == kOfxBitDepthFloat {
-            Some(16usize) // 4 bytes/component × 4 components
+            Some(16usize)
         } else if s == kOfxBitDepthShort {
-            Some(8usize) // 2 bytes/component × 4 components
+            Some(8usize)
         } else if s == kOfxBitDepthByte {
-            Some(4usize) // 1 byte/component × 4 components
+            Some(4usize)
         } else {
             None
         }
     })()
-    .unwrap_or(4); // default to Byte on unrecognized depth
+    .unwrap_or(4);
 
     let row_bytes_u8 = width * 4;
     let total_u8 = row_bytes_u8 * height;
@@ -675,7 +734,6 @@ unsafe fn action_render(
 
     match depth {
         4 => {
-            // Byte: direct copy — fast path
             for y in 0..height {
                 ptr::copy_nonoverlapping(
                     (srcPtr as *const u8).add(y * src_stride),
@@ -685,7 +743,6 @@ unsafe fn action_render(
             }
         }
         8 => {
-            // Short (u16): convert to u8 via (v * 255 + 32767) / 65535
             for y in 0..height {
                 let host_row = (srcPtr as *const u8).add(y * src_stride) as *const u16;
                 let u8_row = src_buf.as_mut_ptr().add(y * row_bytes_u8);
@@ -696,7 +753,6 @@ unsafe fn action_render(
             }
         }
         _ => {
-            // Float (f32): convert to u8 via clamp(0,1) * 255 + round
             for y in 0..height {
                 let host_row = (srcPtr as *const u8).add(y * src_stride) as *const f32;
                 let u8_row = src_buf.as_mut_ptr().add(y * row_bytes_u8);
@@ -708,11 +764,10 @@ unsafe fn action_render(
         }
     }
 
-    blend.apply_effect(&src_buf, &mut dst_buf, width, height);
+    K::apply_effect(&settings, &src_buf, &mut dst_buf, width, height);
 
     match depth {
         4 => {
-            // Byte: direct copy back — fast path
             for y in 0..height {
                 ptr::copy_nonoverlapping(
                     dst_buf.as_ptr().add(y * row_bytes_u8),
@@ -722,7 +777,6 @@ unsafe fn action_render(
             }
         }
         8 => {
-            // u8 to Short (u16): v * 257 (i.e. (v << 8) | v)
             for y in 0..height {
                 let u8_row = dst_buf.as_ptr().add(y * row_bytes_u8);
                 let host_row = (dstPtr as *mut u8).add(y * dst_stride) as *mut u16;
@@ -733,7 +787,6 @@ unsafe fn action_render(
             }
         }
         _ => {
-            // u8 to Float (f32): v / 255.0
             for y in 0..height {
                 let u8_row = dst_buf.as_ptr().add(y * row_bytes_u8);
                 let host_row = (dstPtr as *mut u8).add(y * dst_stride) as *mut f32;
@@ -750,15 +803,14 @@ unsafe fn action_render(
 }
 
 // ---------------------------------------------------------------------------
-// Parameter mapping helpers
+// Parameter mapping helpers — generic
 // ---------------------------------------------------------------------------
 
-#[allow(dead_code)]
-unsafe fn map_params(
-    data: &'static SharedData,
+unsafe fn map_params_generic<K: EffectKind>(
+    data: &SharedData<<K as EffectKind>::FullSettings>,
     param_set: OfxParamSetHandle,
-    setting_descriptors: &[SettingDescriptor<SolidColorBlendFullSettings>],
-    default_settings: &SolidColorBlendFullSettings,
+    setting_descriptors: &[SettingDescriptor<<K as EffectKind>::FullSettings>],
+    default_settings: &<K as EffectKind>::FullSettings,
     parent: &CStr,
 ) -> OfxResult<()> {
     let paramDefine = data
@@ -780,7 +832,7 @@ unsafe fn map_params(
 
     for descriptor in setting_descriptors {
         let mut paramProps: OfxPropertySetHandle = ptr::null_mut();
-        let descriptor_strings: &'static _ = data.strings.get(&descriptor.id).unwrap();
+        let descriptor_strings = data.strings.get(&descriptor.id).unwrap();
         let descriptor_id_cstr = descriptor_strings.0.as_c_str();
 
         match &descriptor.kind {
@@ -802,7 +854,7 @@ unsafe fn map_params(
                         .menu_item_strings
                         .get(&(descriptor.id.clone(), menu_item.index))
                         .unwrap();
-                    let item_label_cstr: &'static CStr = item_strings.0.as_c_str();
+                    let item_label_cstr = item_strings.0.as_c_str();
                     propSetString(
                         paramProps,
                         kOfxParamPropChoiceOption.as_ptr(),
@@ -879,34 +931,14 @@ unsafe fn map_params(
                 .ofx_ok()?;
                 propSetDouble(paramProps, kOfxParamPropDefault.as_ptr(), 0, default_value as f64)
                     .ofx_ok()?;
-                propSetDouble(
-                    paramProps,
-                    kOfxParamPropMin.as_ptr(),
-                    0,
-                    *range.start() as f64,
-                )
-                .ofx_ok()?;
-                propSetDouble(
-                    paramProps,
-                    kOfxParamPropDisplayMin.as_ptr(),
-                    0,
-                    *range.start() as f64,
-                )
-                .ofx_ok()?;
-                propSetDouble(
-                    paramProps,
-                    kOfxParamPropMax.as_ptr(),
-                    0,
-                    *range.end() as f64,
-                )
-                .ofx_ok()?;
-                propSetDouble(
-                    paramProps,
-                    kOfxParamPropDisplayMax.as_ptr(),
-                    0,
-                    *range.end() as f64,
-                )
-                .ofx_ok()?;
+                propSetDouble(paramProps, kOfxParamPropMin.as_ptr(), 0, *range.start() as f64)
+                    .ofx_ok()?;
+                propSetDouble(paramProps, kOfxParamPropDisplayMin.as_ptr(), 0, *range.start() as f64)
+                    .ofx_ok()?;
+                propSetDouble(paramProps, kOfxParamPropMax.as_ptr(), 0, *range.end() as f64)
+                    .ofx_ok()?;
+                propSetDouble(paramProps, kOfxParamPropDisplayMax.as_ptr(), 0, *range.end() as f64)
+                    .ofx_ok()?;
             }
             SettingKind::Boolean => {
                 let default_value = default_settings
@@ -926,7 +958,7 @@ unsafe fn map_params(
                 let default_value = default_settings
                     .get_field::<bool>(&descriptor.id)
                     .map_err(|_| OfxStat::kOfxStatFailed)?;
-                let group_name_cstr: &'static CStr = descriptor_strings
+                let group_name_cstr = descriptor_strings
                     .3
                     .as_ref()
                     .expect("Group name is None")
@@ -970,13 +1002,51 @@ unsafe fn map_params(
                 .ofx_ok()?;
                 propSetInt(checkboxProps, kOfxParamPropAnimates.as_ptr(), 0, 0).ofx_ok()?;
 
-                map_params(data, param_set, children, default_settings, group_name_cstr)?;
+                map_params_generic::<K>(
+                    data,
+                    param_set,
+                    children,
+                    default_settings,
+                    group_name_cstr,
+                )?;
+            }
+            SettingKind::ColorRGBA { r_id, g_id, b_id, a_id } => {
+                paramDefine(
+                    param_set,
+                    kOfxParamTypeRGBA.as_ptr(),
+                    descriptor_id_cstr.as_ptr(),
+                    &mut paramProps,
+                )
+                .ofx_ok()?;
+                let dr = default_settings.get_field::<f32>(r_id).map_err(|_| OfxStat::kOfxStatFailed)? as f64;
+                let dg = default_settings.get_field::<f32>(g_id).map_err(|_| OfxStat::kOfxStatFailed)? as f64;
+                let db = default_settings.get_field::<f32>(b_id).map_err(|_| OfxStat::kOfxStatFailed)? as f64;
+                let da = default_settings.get_field::<f32>(a_id).map_err(|_| OfxStat::kOfxStatFailed)? as f64;
+                propSetDouble(paramProps, kOfxParamPropDefault.as_ptr(), 0, dr).ofx_ok()?;
+                propSetDouble(paramProps, kOfxParamPropDefault.as_ptr(), 1, dg).ofx_ok()?;
+                propSetDouble(paramProps, kOfxParamPropDefault.as_ptr(), 2, db).ofx_ok()?;
+                propSetDouble(paramProps, kOfxParamPropDefault.as_ptr(), 3, da).ofx_ok()?;
+            }
+            SettingKind::ColorRGB { r_id, g_id, b_id } => {
+                paramDefine(
+                    param_set,
+                    kOfxParamTypeRGB.as_ptr(),
+                    descriptor_id_cstr.as_ptr(),
+                    &mut paramProps,
+                )
+                .ofx_ok()?;
+                let dr = default_settings.get_field::<f32>(r_id).map_err(|_| OfxStat::kOfxStatFailed)? as f64;
+                let dg = default_settings.get_field::<f32>(g_id).map_err(|_| OfxStat::kOfxStatFailed)? as f64;
+                let db = default_settings.get_field::<f32>(b_id).map_err(|_| OfxStat::kOfxStatFailed)? as f64;
+                propSetDouble(paramProps, kOfxParamPropDefault.as_ptr(), 0, dr).ofx_ok()?;
+                propSetDouble(paramProps, kOfxParamPropDefault.as_ptr(), 1, dg).ofx_ok()?;
+                propSetDouble(paramProps, kOfxParamPropDefault.as_ptr(), 2, db).ofx_ok()?;
             }
         }
 
         if !paramProps.is_null() {
             let descriptor_strings = data.strings.get(&descriptor.id).unwrap();
-            let descriptor_label_cstr: &'static CStr = descriptor_strings.1.as_c_str();
+            let descriptor_label_cstr = descriptor_strings.1.as_c_str();
             propSetString(
                 paramProps,
                 kOfxPropLabel.as_ptr(),
@@ -1000,12 +1070,12 @@ unsafe fn map_params(
     Ok(())
 }
 
-unsafe fn apply_params(
-    data: &'static SharedData,
+unsafe fn apply_params_generic<K: EffectKind>(
+    data: &SharedData<<K as EffectKind>::FullSettings>,
     param_set: OfxParamSetHandle,
     time: f64,
-    _setting_descriptors: &[SettingDescriptor<SolidColorBlendFullSettings>],
-    dst: &mut SolidColorBlendFullSettings,
+    setting_descriptors: &[SettingDescriptor<<K as EffectKind>::FullSettings>],
+    dst: &mut <K as EffectKind>::FullSettings,
 ) -> OfxResult<()> {
     let paramGetHandle = data
         .parameter_suite
@@ -1015,49 +1085,95 @@ unsafe fn apply_params(
         .parameter_suite
         .paramGetValueAtTime
         .ok_or(OfxStat::kOfxStatFailed)?;
+    let propGetDouble = data
+        .property_suite
+        .propGetDouble
+        .ok_or(OfxStat::kOfxStatFailed)?;
 
-    // --- Read RGBA param ---
-    let mut rgba_param: OfxParamHandle = ptr::null_mut();
-    paramGetHandle(
-        param_set,
-        RGBA_PARAM_NAME.as_ptr(),
-        &mut rgba_param,
-        ptr::null_mut(),
-    )
-    .ofx_ok()?;
+    for descriptor in setting_descriptors {
+        let descriptor_strings = data.strings.get(&descriptor.id).unwrap();
+        let descriptor_id_cstr = descriptor_strings.0.as_c_str();
 
-    let td = &data.settings_list.setting_descriptors;
-    let find_id = |name: &str| -> &SettingID<SolidColorBlendFullSettings> {
-        &td.iter().find(|d| d.id.name == name).unwrap().id
-    };
+        match &descriptor.kind {
+            SettingKind::Enumeration { options } => {
+                let mut param: OfxParamHandle = ptr::null_mut();
+                paramGetHandle(param_set, descriptor_id_cstr.as_ptr(), &mut param, ptr::null_mut())
+                    .ofx_ok()?;
+                let mut selected_idx: c_int = 0;
+                paramGetValueAtTime(param, time, &mut selected_idx).ofx_ok()?;
+                dst.set_field::<EnumValue>(
+                    &descriptor.id,
+                    EnumValue(options[selected_idx as usize].index),
+                )
+                .unwrap();
+            }
+            SettingKind::Percentage { .. } => {
+                let mut param: OfxParamHandle = ptr::null_mut();
+                paramGetHandle(param_set, descriptor_id_cstr.as_ptr(), &mut param, ptr::null_mut())
+                    .ofx_ok()?;
+                let mut value: f64 = 0.0;
+                paramGetValueAtTime(param, time, &mut value).ofx_ok()?;
+                dst.set_field::<f32>(&descriptor.id, value as f32).unwrap();
+            }
+            SettingKind::IntRange { .. } => {
+                let mut param: OfxParamHandle = ptr::null_mut();
+                paramGetHandle(param_set, descriptor_id_cstr.as_ptr(), &mut param, ptr::null_mut())
+                    .ofx_ok()?;
+                let mut value: c_int = 0;
+                paramGetValueAtTime(param, time, &mut value).ofx_ok()?;
+                dst.set_field::<i32>(&descriptor.id, value).unwrap();
+            }
+            SettingKind::FloatRange { .. } => {
+                let mut param: OfxParamHandle = ptr::null_mut();
+                paramGetHandle(param_set, descriptor_id_cstr.as_ptr(), &mut param, ptr::null_mut())
+                    .ofx_ok()?;
+                let mut value: f64 = 0.0;
+                paramGetValueAtTime(param, time, &mut value).ofx_ok()?;
+                dst.set_field::<f32>(&descriptor.id, value as f32).unwrap();
+            }
+            SettingKind::Boolean => {
+                let mut param: OfxParamHandle = ptr::null_mut();
+                paramGetHandle(param_set, descriptor_id_cstr.as_ptr(), &mut param, ptr::null_mut())
+                    .ofx_ok()?;
+                let mut value: c_int = 0;
+                paramGetValueAtTime(param, time, &mut value).ofx_ok()?;
+                dst.set_field::<bool>(&descriptor.id, value != 0).unwrap();
+            }
+            SettingKind::Group { children } => {
+                let mut param: OfxParamHandle = ptr::null_mut();
+                paramGetHandle(param_set, descriptor_id_cstr.as_ptr(), &mut param, ptr::null_mut())
+                    .ofx_ok()?;
+                let mut value: c_int = 0;
+                paramGetValueAtTime(param, time, &mut value).ofx_ok()?;
+                dst.set_field::<bool>(&descriptor.id, value != 0).unwrap();
 
-    let mut r: f64 = 0.0; let mut g: f64 = 0.0;
-    let mut b: f64 = 0.0; let mut a: f64 = 0.0;
-    paramGetValueAtTime(rgba_param, time, &mut r, &mut g, &mut b, &mut a).ofx_ok()?;
-    dst.set_field::<f32>(find_id("color_r"), r as f32).unwrap();
-    dst.set_field::<f32>(find_id("color_g"), g as f32).unwrap();
-    dst.set_field::<f32>(find_id("color_b"), b as f32).unwrap();
-    dst.set_field::<f32>(find_id("color_a"), a as f32).unwrap();
-
-    // --- Read blend_mode choice param ---
-    let mut mode_param: OfxParamHandle = ptr::null_mut();
-    paramGetHandle(
-        param_set,
-        BLEND_MODE_PARAM_NAME.as_ptr(),
-        &mut mode_param,
-        ptr::null_mut(),
-    )
-    .ofx_ok()?;
-
-    let mut selected_idx: c_int = 0;
-    paramGetValueAtTime(mode_param, time, &mut selected_idx).ofx_ok()?;
-    let blend_mode_desc = td.iter().find(|d| d.id.name == "blend_mode").unwrap();
-    if let SettingKind::Enumeration { options } = &blend_mode_desc.kind {
-        dst.set_field::<EnumValue>(
-            &blend_mode_desc.id,
-            EnumValue(options[selected_idx as usize].index),
-        ).unwrap();
+                apply_params_generic::<K>(data, param_set, time, children, dst)?;
+            }
+            SettingKind::ColorRGBA { r_id, g_id, b_id, a_id } => {
+                let mut param: OfxParamHandle = ptr::null_mut();
+                paramGetHandle(param_set, descriptor_id_cstr.as_ptr(), &mut param, ptr::null_mut())
+                    .ofx_ok()?;
+                let mut r: f64 = 0.0; let mut g: f64 = 0.0;
+                let mut b: f64 = 0.0; let mut a: f64 = 0.0;
+                paramGetValueAtTime(param, time, &mut r, &mut g, &mut b, &mut a).ofx_ok()?;
+                dst.set_field::<f32>(r_id, r as f32).unwrap();
+                dst.set_field::<f32>(g_id, g as f32).unwrap();
+                dst.set_field::<f32>(b_id, b as f32).unwrap();
+                dst.set_field::<f32>(a_id, a as f32).unwrap();
+            }
+            SettingKind::ColorRGB { r_id, g_id, b_id } => {
+                let mut param: OfxParamHandle = ptr::null_mut();
+                paramGetHandle(param_set, descriptor_id_cstr.as_ptr(), &mut param, ptr::null_mut())
+                    .ofx_ok()?;
+                let mut r: f64 = 0.0; let mut g: f64 = 0.0; let mut b: f64 = 0.0;
+                paramGetValueAtTime(param, time, &mut r, &mut g, &mut b).ofx_ok()?;
+                dst.set_field::<f32>(r_id, r as f32).unwrap();
+                dst.set_field::<f32>(g_id, g as f32).unwrap();
+                dst.set_field::<f32>(b_id, b as f32).unwrap();
+            }
+        }
     }
 
+    let _ = propGetDouble;
     Ok(())
 }

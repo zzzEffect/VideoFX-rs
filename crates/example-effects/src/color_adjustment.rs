@@ -1,10 +1,10 @@
 use rayon::prelude::*;
 
-use crate::settings::standard::{ColorPreset, ExampleEffect};
+use crate::settings::color_adjustment::{ColorAdjustment, ColorPreset};
 use crate::RECIP_255;
 
-impl ExampleEffect {
-    /// Apply the example effect to an RGBA buffer.
+impl ColorAdjustment {
+    /// Apply the color adjustment effect to an RGBA buffer.
     ///
     /// Applies: brightness, tint (per-channel), invert, advanced contrast/saturation,
     /// and color presets. GPU-accelerated when available; falls back to CPU.
@@ -23,7 +23,7 @@ impl ExampleEffect {
         #[cfg(feature = "gpu")]
         {
             let gpu_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                crate::gpu::standard::try_standard_effect_gpu_render(self, src, dst, width, height)
+                crate::gpu::color_adjustment::try_color_adjustment_gpu_render(self, src, dst, width, height)
             }));
             match gpu_result {
                 Ok(Ok(true)) => return,

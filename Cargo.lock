@@ -655,6 +655,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 
 [[package]]
+name = "example-effects"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "hifijson",
+ "num_enum",
+ "pollster",
+ "rayon",
+ "sval",
+ "sval_json",
+ "video-fx-macros",
+ "wgpu",
+]
+
+[[package]]
 name = "fastrand"
 version = "2.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2030,28 +2045,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
-name = "video-fx"
-version = "0.1.0"
-dependencies = [
- "bytemuck",
- "hifijson",
- "num_enum",
- "pollster",
- "rayon",
- "sval",
- "sval_json",
- "video-fx-macros",
- "wgpu",
-]
-
-[[package]]
 name = "video-fx-ae-plugin"
 version = "0.1.0"
 dependencies = [
  "after-effects",
+ "example-effects",
  "pipl",
  "premiere",
- "video-fx",
 ]
 
 [[package]]
@@ -2060,9 +2060,9 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "aviutl2",
+ "example-effects",
  "tracing",
  "tracing-subscriber",
- "video-fx",
 ]
 
 [[package]]
@@ -2079,8 +2079,8 @@ name = "video-fx-openfx-plugin"
 version = "0.1.0"
 dependencies = [
  "bindgen 0.71.1",
+ "example-effects",
  "trybuild",
- "video-fx",
 ]
 
 [[package]]

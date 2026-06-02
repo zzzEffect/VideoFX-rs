@@ -1,6 +1,6 @@
 use std::sync::{atomic::AtomicBool, atomic::Ordering, Mutex, OnceLock};
 
-use crate::settings::solid::SolidColorBlend;
+use crate::settings::color_adjustment::ColorAdjustment;
 
 // ---------------------------------------------------------------------------
 // Uniforms
@@ -11,11 +11,14 @@ use crate::settings::solid::SolidColorBlend;
 struct Uniforms {
     width: u32,
     height: u32,
-    blend_mode: u32,
-    blend_amount: f32,
-    solid_r: f32,
-    solid_g: f32,
-    solid_b: f32,
+    brightness: f32,
+    tint_r: f32,
+    tint_g: f32,
+    tint_b: f32,
+    invert: u32,
+    contrast: f32,
+    saturation: f32,
+    color_preset: u32,
 }
 
 // ---------------------------------------------------------------------------
@@ -47,8 +50,8 @@ static CTX: OnceLock<Mutex<Ctx>> = OnceLock::new();
 // Public API
 // ---------------------------------------------------------------------------
 
-pub fn try_solid_blend_gpu_render(
-    settings: &SolidColorBlend,
+pub fn try_color_adjustment_gpu_render(
+    settings: &ColorAdjustment,
     src: &[u8],
     dst: &mut [u8],
     width: usize,
@@ -82,7 +85,7 @@ pub fn try_solid_blend_gpu_render(
 
     let image_size = (total * 4) as u64;
 
-    // Pack u8 RGBA → u32 for the shader
+    // Pack u8 RGBA → u32
     let src_packed: Vec<u32> = src[..image_size as usize]
         .chunks_exact(4)
         .map(|c| {
@@ -90,15 +93,28 @@ pub fn try_solid_blend_gpu_render(
         })
         .collect();
 
-    let a = settings.color_a.clamp(0.0, 1.0);
+    let contrast = settings
+        .advanced
+        .as_ref()
+        .map(|a| a.contrast.clamp(0.0, 4.0))
+        .unwrap_or(1.0);
+    let saturation = settings
+        .advanced
+        .as_ref()
+        .map(|a| a.saturation.clamp(0.0, 2.0))
+        .unwrap_or(1.0);
+
     let uniforms = Uniforms {
         width: w,
         height: h,
-        blend_mode: settings.blend_mode as u32,
-        blend_amount: a,
-        solid_r: settings.color_r.clamp(0.0, 1.0),
-        solid_g: settings.color_g.clamp(0.0, 1.0),
-        solid_b: settings.color_b.clamp(0.0, 1.0),
+        brightness: settings.brightness.clamp(0.0, 2.0),
+        tint_r: settings.tint_r.clamp(0.0, 2.0),
+        tint_g: settings.tint_g.clamp(0.0, 2.0),
+        tint_b: settings.tint_b.clamp(0.0, 2.0),
+        invert: if settings.invert_colors { 1 } else { 0 },
+        contrast,
+        saturation,
+        color_preset: settings.color_preset as u32,
     };
 
     g.queue
@@ -109,7 +125,7 @@ pub fn try_solid_blend_gpu_render(
     if g.bg.is_none() {
         let layout = g.pipeline.get_bind_group_layout(0);
         g.bg = Some(g.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("solid_blend"),
+            label: Some("color_adjustment"),
             layout: &layout,
             entries: &[
                 wgpu::BindGroupEntry {
@@ -174,7 +190,6 @@ pub fn try_solid_blend_gpu_render(
     match rx.recv() {
         Ok(Ok(())) => {
             let mapped = slice.get_mapped_range();
-            // Unpack u32 → u8 RGBA
             let dst_u32: &[u32] = bytemuck::cast_slice(&mapped);
             for (i, pixel) in dst_u32.iter().take(total).enumerate() {
                 let o = i * 4;
@@ -207,14 +222,14 @@ fn get_or_init() -> Result<&'static Mutex<Ctx>, String> {
 
     let (device, queue) = crate::gpu::device::get_or_init_shared_device()?;
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("solid_blend"),
-        source: super::load_shader(include_str!("../../shaders/solid_blend.wgsl")),
+        label: Some("color_adjustment"),
+        source: super::load_shader(include_str!("../../shaders/color_adjustment.wgsl")),
     });
     let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: Some("solid_blend"),
+        label: Some("color_adjustment"),
         layout: None,
         module: &shader,
-        entry_point: Some("solid_blend_main"),
+        entry_point: Some("main"),
         compilation_options: Default::default(),
         cache: None,
     });

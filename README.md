@@ -7,23 +7,32 @@ A general-purpose framework for building cross-host video effect plugins in Rust
 ```
 VideoFX-rs/
 ├── crates/
-│   ├── videofx/                 # Core library (settings, i18n, GPU, effects)
-│   ├── macros/                  # Proc macro: #[derive(FullSettings)]
-│   ├── ae-plugin/               # After Effects / Premiere plugin (cdylib)
-│   ├── openfx-plugin/           # OpenFX plugin (cdylib)
+│   ├── example-effects/          # Core library (settings, i18n, GPU, effects)
+│   ├── macros/                   # Proc macro: #[derive(FullSettings)]
+│   ├── ae-plugin/                # After Effects / Premiere plugin (cdylib)
+│   ├── openfx-plugin/            # OpenFX plugin (cdylib)
 │   │   └── vendor/
-│   │       └── openfx/          # OpenFX SDK (git submodule)
+│   │       └── openfx/           # OpenFX SDK (git submodule)
 │   └── aviutl2-plugin/          # AviUtl2 filter plugin (cdylib, Windows only)
-└── xtask/                       # Build & bundle helper (cargo xtask)
+└── xtask/                        # Build & bundle helper (cargo xtask)
 ```
 
 ## Supported Hosts
 
 | Host | Example Crate | Build Command |
 |------|---------------|---------------|
-| After Effects / Premiere | `ae-plugin` | `cargo build -p video-fx-ae-plugin` |
+| After Effects / Premiere | `ae-plugin` | `cargo build -p video-fx-ae-plugin --features color-adjustment` |
 | OpenFX (Resolve, VEGAS, etc.) | `openfx-plugin` | `cargo xtask build-ofx-plugin` |
 | AviUtl2 (ExEdit2) | `aviutl2-plugin` | `cargo xtask build-aviutl2-plugin --release` |
+
+## Effects
+
+This project includes two example effects:
+
+| Effect | Description |
+|--------|-------------|
+| **VideoFX Example Color Adjustment** | Brightness, per-channel tint, invert colors, contrast, saturation, and color presets (Warm/Cool/Sepia). |
+| **VideoFX Example Solid Blend** | Solid color overlay with blend modes (Normal, Multiply, Screen, Overlay). |
 
 ## Quick Start
 
@@ -78,16 +87,20 @@ After installing Rust and cloning the repository, the steps are platform-specifi
 
 #### Windows
 
-Build the OpenFX plugin and/or After Effects plugin:
-
 ```bash
-# Build the OpenFX plugin (the output will be `crates/openfx-plugin/build/VideoFx.ofx.bundle`)
+# Build the OpenFX plugin (output: `crates/openfx-plugin/build/VideoFx.ofx.bundle`)
+# Contains both effects in a single bundle.
 cargo xtask build-ofx-plugin --release
 
-# Build the After Effects plugin (the output will be `target/release/video_fx_ae_plugin.dll`)
-# To install it, copy + rename the .dll to:
-# C:\Program Files\Adobe\Common\Plug-ins\7.0\MediaCore\VideoFx.aex
-cargo build -p video-fx-ae-plugin --release
+# Build the After Effects plugin — Color Adjustment
+# The output DLL is `target/release/video_fx_ae_plugin.dll`.
+# Rename and copy to:
+# C:\Program Files\Adobe\Common\Plug-ins\7.0\MediaCore\VideoFXExampleColorAdjustment.aex
+cargo build -p video-fx-ae-plugin --features color-adjustment --release
+
+# Build the After Effects plugin — Solid Blend
+# Rename the DLL to VideoFXExampleSolidBlend.aex and copy alongside.
+cargo build -p video-fx-ae-plugin --no-default-features --features solid-blend --release
 
 # Build the AviUtl2 filter plugin (output: `crates/aviutl2-plugin/build/VideoFX-rs.au2pkg.zip`)
 cargo xtask build-aviutl2-plugin --release
@@ -99,7 +112,7 @@ cargo xtask build-aviutl2-plugin --release
 # Build the OpenFX plugin (output will be in `crates/openfx-plugin/build`)
 cargo xtask build-ofx-plugin --macos-universal --release
 
-# Build and bundle the After Effects plugin (output will be in the `build` folder)
+# Build and bundle both After Effects plugins (output will be in the `build` folder)
 cargo xtask macos-ae-plugin --macos-universal --release
 ```
 
@@ -148,15 +161,16 @@ impl MyEffect {
 
 ## Framework Crates
 
-### videofx (core)
+### example-effects (core)
 
-The core library (`crates/videofx/`, package `video-fx`) bundles the settings framework, i18n system, GPU device management, and example effects:
+The core library (`crates/example-effects/`, package `example-effects`) bundles the settings framework, i18n system, GPU device management, and example effects:
 - `Settings` trait with `get_field`/`set_field` for type-erased parameter access
 - `SettingsList<T>` for introspection, JSON serialization/deserialization
 - `I18nKey` trait and `i18n_keys!` macro for translation key generation
 - `SettingDescriptor`, `SettingKind`, `MenuItem` for describing parameters to plugin hosts
 - `setting_id!` macro for concise parameter ID creation
 - `get_or_init_shared_device()` / `is_shared_device_ready()` — shared wgpu device management
+- Localization support: English, 简体中文, 日本語, 한국어
 
 ### macros
 
@@ -170,12 +184,14 @@ Copy `crates/openfx-plugin/build/VideoFx.ofx.bundle/` to your OFX host's plugins
 - **DaVinci Resolve**: `C:\ProgramData\Blackmagic Design\DaVinci Resolve\Support\OFXPlugins\`
 - **Natron**: `C:\Program Files\Common Files\OFX\Plugins\`
 
+The bundle contains both effects under the **"VideoFX Example"** category.
+
 ### After Effects / Premiere
 
-Copy the built `.aex` to:
+Copy the built `.aex` files to:
 - `C:\Program Files\Adobe\Common\Plug-ins\7.0\MediaCore\`
 
-The plugin appears as **"VideoFx Effect"** under the **"Example"** category.
+The plugins appear under the **"VideoFX Example"** category as **"VideoFX Example Color Adjustment"** and **"VideoFX Example Solid Blend"**.
 
 ### AviUtl2
 
@@ -183,9 +199,11 @@ Drag `VideoFX-rs.au2pkg.zip` onto the AviUtl2 preview window, or extract the con
 
 - `Plugin/VideoFX.aux2` — the filter plugin
 - `Language/English.video_fx_aviutl2_plugin.aul2` — English labels
-- `Language/简体中文.video_fx_aviutl2_plugin.aul2` — Chinese labels
+- `Language/简体中文.video_fx_aviutl2_plugin.aul2` — Chinese (Simplified) labels
+- `Language/Japanese.video_fx_aviutl2_plugin.aul2` — Japanese labels
+- `Language/한국어.video_fx_aviutl2_plugin.aul2` — Korean labels
 
-After a restart, the effects appear in ExEdit2's filter list as **"VideoFX Example Effect"** and **"VideoFX Solid Color Blend"**.
+After a restart, the effects appear in ExEdit2's filter list under **"VideoFX Example"** as **"VideoFX Example Color Adjustment"** and **"VideoFX Example Solid Blend"**.
 
 ## License
 

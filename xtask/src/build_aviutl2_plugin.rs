@@ -8,60 +8,81 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::process::Command;
 
-const EN_AUL2: &str = "\
-[VideoFX Example Effect]
-Brightness=Brightness
-Invert Colors=Invert Colors
-Tint Red=Tint Red
-Tint Green=Tint Green
-Tint Blue=Tint Blue
-Advanced=Advanced
-Contrast=Contrast
-Saturation=Saturation
-Color Preset=Color Preset
-None=None
-Warm=Warm
-Cool=Cool
-Sepia=Sepia
+// Keys are Japanese (AviUtl2 built-in language). Values are the target language.
 
-[VideoFX Solid Color Blend]
-Color Red=Color Red
-Color Green=Color Green
-Color Blue=Color Blue
-Blend Amount=Blend Amount
-Blend Mode=Blend Mode
-Normal=Normal
-Multiply=Multiply
-Screen=Screen
-Overlay=Overlay
+const EN_AUL2: &str = "\
+[VideoFX Example Color Adjustment]
+明るさ=Brightness
+色反転=Invert Colors
+色合い=Tint
+詳細設定=Advanced
+コントラスト=Contrast
+彩度=Saturation
+カラープリセット=Color Preset
+なし=None
+暖色=Warm
+寒色=Cool
+セピア=Sepia
+
+[VideoFX Example Solid Blend]
+色=Color
+ブレンド量=Blend Amount
+ブレンド減衰=Blend Attenuation
+ブレンドモード=Blend Mode
+通常=Normal
+乗算=Multiply
+スクリーン=Screen
+オーバーレイ=Overlay
 ";
 
 const ZH_AUL2: &str = "\
-[VideoFX Example Effect]
-Brightness=亮度
-Invert Colors=反转颜色
-Tint Red=红色调
-Tint Green=绿色调
-Tint Blue=蓝色调
-Advanced=高级
-Contrast=对比度
-Saturation=饱和度
-Color Preset=颜色预设
-None=无
-Warm=暖色
-Cool=冷色
-Sepia=怀旧
+[VideoFX Example Color Adjustment]
+明るさ=亮度
+色反転=反转颜色
+色合い=色调
+詳細設定=高级
+コントラスト=对比度
+彩度=饱和度
+カラープリセット=颜色预设
+なし=无
+暖色=暖色
+寒色=冷色
+セピア=怀旧
 
-[VideoFX Solid Color Blend]
-Color Red=红色
-Color Green=绿色
-Color Blue=蓝色
-Blend Amount=混合量
-Blend Mode=混合模式
-Normal=正常
-Multiply=正片叠底
-Screen=滤色
-Overlay=叠加
+[VideoFX Example Solid Blend]
+色=颜色
+ブレンド量=混合量
+ブレンド減衰=混合衰减
+ブレンドモード=混合模式
+通常=正常
+乗算=正片叠底
+スクリーン=滤色
+オーバーレイ=叠加
+";
+
+const KO_AUL2: &str = "\
+[VideoFX Example Color Adjustment]
+明るさ=밝기
+色反転=색상 반전
+色合い=색조
+詳細設定=고급 설정
+コントラスト=대비
+彩度=채도
+カラープリセット=색상 프리셋
+なし=없음
+暖色=따뜻한 색
+寒色=차가운 색
+セピア=세피아
+
+[VideoFX Example Solid Blend]
+色=색상
+ブレンド量=혼합량
+ブレンド減衰=블렌드 감쇠
+ブレンドモード=혼합 모드
+通常=일반
+乗算=곱하기
+スクリーン=스크린
+オーバーレイ=오버레이
 ";
 
 const PACKAGE_TOML: &str = "\
@@ -116,12 +137,23 @@ pub fn main(args: &clap::ArgMatches) -> Result<(), Box<dyn Error>> {
     fs::write(&zh_path, ZH_AUL2)?;
     println!("Written 简体中文 .aul2");
 
+    let ko_path = output_dir.plus_iter(["Language", "한국어.video_fx_aviutl2_plugin.aul2"]);
+    fs::write(&ko_path, KO_AUL2)?;
+    println!("Written 한국어 .aul2");
+
     let pkg_path = output_dir.plus("package.txt");
     fs::write(&pkg_path, PACKAGE_TOML)?;
     println!("Written package.txt");
 
     let zip_path = output_dir.plus("VideoFX-rs.au2pkg.zip");
-    write_au2pkg_zip(&zip_path, &auf2_path, &en_path, &zh_path, &pkg_path)?;
+    write_au2pkg_zip(
+        &zip_path,
+        &auf2_path,
+        &en_path,
+        &zh_path,
+        &ko_path,
+        &pkg_path,
+    )?;
     println!("Packaged zip → {}", zip_path.display());
 
     println!(
@@ -168,6 +200,7 @@ fn write_au2pkg_zip(
     auf2_path: &std::path::Path,
     en_aul2_path: &std::path::Path,
     zh_aul2_path: &std::path::Path,
+    ko_aul2_path: &std::path::Path,
     pkg_path: &std::path::Path,
 ) -> Result<(), Box<dyn Error>> {
     let file = fs::File::create(zip_path)?;
@@ -192,6 +225,12 @@ fn write_au2pkg_zip(
         options,
         "Language/简体中文.video_fx_aviutl2_plugin.aul2",
         &fs::read(zh_aul2_path)?,
+    )?;
+    add_file_to_zip(
+        &mut zip,
+        options,
+        "Language/한국어.video_fx_aviutl2_plugin.aul2",
+        &fs::read(ko_aul2_path)?,
     )?;
     add_file_to_zip(&mut zip, options, "package.txt", &fs::read(pkg_path)?)?;
 

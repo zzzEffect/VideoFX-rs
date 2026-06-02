@@ -3,26 +3,44 @@
 mod handle;
 
 use after_effects::{self as ae};
-use video_fx::{
+use example_effects::{
     i18n,
-    ExampleEffect, ExampleEffectFullSettings,
     settings::{
         EnumValue, SettingDescriptor, SettingKind, SettingID, Settings, SettingsList,
     },
 };
+
+#[cfg(feature = "color-adjustment")]
+use example_effects::{ColorAdjustment, ColorAdjustmentFullSettings};
+#[cfg(feature = "solid-blend")]
+use example_effects::{SolidColorBlend, SolidColorBlendFullSettings};
+
+// ---------------------------------------------------------------------------
+// Type aliases based on feature
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "color-adjustment")]
+type Effect = ColorAdjustment;
+#[cfg(feature = "color-adjustment")]
+type EffectFullSettings = ColorAdjustmentFullSettings;
+
+#[cfg(feature = "solid-blend")]
+type Effect = SolidColorBlend;
+#[cfg(feature = "solid-blend")]
+type EffectFullSettings = SolidColorBlendFullSettings;
 
 // ---------------------------------------------------------------------------
 // Plugin struct
 // ---------------------------------------------------------------------------
 
 struct Plugin {
-    settings: SettingsList<ExampleEffectFullSettings>,
+    settings: SettingsList<EffectFullSettings>,
 }
 
 impl Default for Plugin {
     fn default() -> Self {
         Self {
-            settings: SettingsList::<ExampleEffectFullSettings>::new(),
+            settings: SettingsList::<EffectFullSettings>::new(),
         }
     }
 }
@@ -87,8 +105,8 @@ impl AdobePluginGlobal for Plugin {
         Self::map_params(
             params,
             &self.settings.setting_descriptors,
-            &ExampleEffectFullSettings::default(),
-            &ExampleEffectFullSettings::legacy_value(),
+            &EffectFullSettings::default(),
+            &EffectFullSettings::legacy_value(),
         )?;
 
         Ok(())
@@ -160,10 +178,21 @@ impl Plugin {
     }
 
     fn about(&self, _in_data: InData, mut out_data: OutData) -> Result<(), Error> {
-        const DESCRIPTION: &str = "Example effect plugin demonstrating multi-host Rust plugin skeleton.";
+        #[cfg(feature = "color-adjustment")]
+        const DESCRIPTION: &str =
+            "VideoFX Example Color Adjustment — brightness, tint, contrast, saturation.";
+        #[cfg(feature = "solid-blend")]
+        const DESCRIPTION: &str =
+            "VideoFX Example Solid Blend — solid color overlay with blend modes.";
+
+        #[cfg(feature = "color-adjustment")]
+        const NAME: &str = "VideoFX Example Color Adjustment";
+        #[cfg(feature = "solid-blend")]
+        const NAME: &str = "VideoFX Example Solid Blend";
+
         out_data.set_return_msg(
             format!(
-                "Example Effect {}.{}.{}\r\r{DESCRIPTION}",
+                "{NAME} {}.{}.{}\r\r{DESCRIPTION}",
                 env!("EFFECT_VERSION_MAJOR"),
                 env!("EFFECT_VERSION_MINOR"),
                 env!("EFFECT_VERSION_PATCH")
@@ -251,22 +280,18 @@ impl Plugin {
         self.do_render(input_world, output_world, params)
     }
 
-    /// Passthrough render: copies source pixels to destination unchanged.
     fn do_render(
         &self,
         in_layer: Layer,
         mut out_layer: Layer,
         params: &mut Parameters<ParamID>,
     ) -> Result<(), Error> {
-        // Apply settings from params (demonstrates the parameter system)
-        let effect: ExampleEffect = self.apply_settings(params)?.into();
+        let effect: Effect = self.apply_settings(params)?.into();
 
-        // Extract dimensions before mutable borrow
         let src_row_bytes = in_layer.row_bytes();
-        let _dst_row_bytes = out_layer.row_bytes();
         let height = in_layer.height().min(out_layer.height()) as usize;
         let width = in_layer.width().min(out_layer.width()) as usize;
-        let pixel_size = 4; // Assume BGRA 8-bit
+        let pixel_size = 4;
 
         let src_stride = if src_row_bytes > 0 {
             src_row_bytes as usize
@@ -280,7 +305,6 @@ impl Plugin {
         let src_buf = in_layer.buffer();
         let dst_buf = out_layer.buffer_mut();
 
-        // Copy source rows into contiguous buffer
         let mut src_contig = vec![0u8; total];
         for y in 0..height {
             let src_offset = y * src_stride;
@@ -294,11 +318,9 @@ impl Plugin {
             }
         }
 
-        // Apply the actual effect
         let mut dst_contig = vec![0u8; total];
         effect.apply_effect(&src_contig, &mut dst_contig, width, height);
 
-        // Copy result back to output rows
         for y in 0..height {
             let src_offset = y * src_stride;
             let dst_offset = y * row_bytes;
@@ -315,12 +337,12 @@ impl Plugin {
     }
 
     // -----------------------------------------------------------------------
-    // Parameter mapping (generic — works with any Settings type)
+    // Parameter mapping
     // -----------------------------------------------------------------------
 
     fn update_controls_disabled(
         params: &mut Parameters<ParamID>,
-        descriptors: &[SettingDescriptor<ExampleEffectFullSettings>],
+        descriptors: &[SettingDescriptor<EffectFullSettings>],
         enabled: bool,
     ) -> Result<(), Error> {
         for descriptor in descriptors {
@@ -347,14 +369,14 @@ impl Plugin {
 
     fn map_params(
         params: &mut Parameters<ParamID>,
-        descriptors: &[SettingDescriptor<ExampleEffectFullSettings>],
-        default_settings: &ExampleEffectFullSettings,
-        legacy_default_settings: &ExampleEffectFullSettings,
+        descriptors: &[SettingDescriptor<EffectFullSettings>],
+        default_settings: &EffectFullSettings,
+        legacy_default_settings: &EffectFullSettings,
     ) -> Result<(), Error> {
-        fn get_defaults<T: video_fx::settings::SettingField + 'static>(
-            defaults: &ExampleEffectFullSettings,
-            legacy_defaults: &ExampleEffectFullSettings,
-            descriptor: &SettingDescriptor<ExampleEffectFullSettings>,
+        fn get_defaults<T: example_effects::settings::SettingField + 'static>(
+            defaults: &EffectFullSettings,
+            legacy_defaults: &EffectFullSettings,
+            descriptor: &SettingDescriptor<EffectFullSettings>,
         ) -> Result<[T; 2], Error> {
             Ok([
                 defaults
@@ -545,6 +567,47 @@ impl Plugin {
                         },
                     )?;
                 }
+                SettingKind::ColorRGBA { r_id, g_id, b_id, a_id } => {
+                    let [default_r, legacy_r] = get_defaults::<f32>(default_settings, legacy_default_settings, &SettingDescriptor { label_key: descriptor.label_key, description_key: descriptor.description_key, kind: SettingKind::Percentage { logarithmic: false }, id: r_id.clone() })?;
+                    let [default_g, legacy_g] = get_defaults::<f32>(default_settings, legacy_default_settings, &SettingDescriptor { label_key: descriptor.label_key, description_key: descriptor.description_key, kind: SettingKind::Percentage { logarithmic: false }, id: g_id.clone() })?;
+                    let [default_b, legacy_b] = get_defaults::<f32>(default_settings, legacy_default_settings, &SettingDescriptor { label_key: descriptor.label_key, description_key: descriptor.description_key, kind: SettingKind::Percentage { logarithmic: false }, id: b_id.clone() })?;
+                    let [default_a, legacy_a] = get_defaults::<f32>(default_settings, legacy_default_settings, &SettingDescriptor { label_key: descriptor.label_key, description_key: descriptor.description_key, kind: SettingKind::Percentage { logarithmic: false }, id: a_id.clone() })?;
+                    let to_u8 = |v: f32| -> u8 { (v.clamp(0.0, 1.0) * 255.0).round() as u8 };
+                    params.add_customized(
+                        ParamID::Param(descriptor.id.ae_id()),
+                        i18n::tr(descriptor.label_key),
+                        ae::ColorDef::setup(|c| {
+                            c.set_default(ae::Pixel8 { alpha: to_u8(default_a), red: to_u8(default_r), green: to_u8(default_g), blue: to_u8(default_b) });
+                            c.set_value(ae::Pixel8 { alpha: to_u8(legacy_a), red: to_u8(legacy_r), green: to_u8(legacy_g), blue: to_u8(legacy_b) });
+                        }),
+                        |p| {
+                            p.set_id(descriptor.id.ae_id());
+                            p.set_flag(ParamFlag::START_COLLAPSED, true);
+                            p.set_flag(ParamFlag::USE_VALUE_FOR_OLD_PROJECTS, true);
+                            -1
+                        },
+                    )?;
+                }
+                SettingKind::ColorRGB { r_id, g_id, b_id } => {
+                    let [default_r, legacy_r] = get_defaults::<f32>(default_settings, legacy_default_settings, &SettingDescriptor { label_key: descriptor.label_key, description_key: descriptor.description_key, kind: SettingKind::Percentage { logarithmic: false }, id: r_id.clone() })?;
+                    let [default_g, legacy_g] = get_defaults::<f32>(default_settings, legacy_default_settings, &SettingDescriptor { label_key: descriptor.label_key, description_key: descriptor.description_key, kind: SettingKind::Percentage { logarithmic: false }, id: g_id.clone() })?;
+                    let [default_b, legacy_b] = get_defaults::<f32>(default_settings, legacy_default_settings, &SettingDescriptor { label_key: descriptor.label_key, description_key: descriptor.description_key, kind: SettingKind::Percentage { logarithmic: false }, id: b_id.clone() })?;
+                    let to_u8 = |v: f32| -> u8 { (v.clamp(0.0, 1.0) * 255.0).round() as u8 };
+                    params.add_customized(
+                        ParamID::Param(descriptor.id.ae_id()),
+                        i18n::tr(descriptor.label_key),
+                        ae::ColorDef::setup(|c| {
+                            c.set_default(ae::Pixel8 { alpha: 255, red: to_u8(default_r), green: to_u8(default_g), blue: to_u8(default_b) });
+                            c.set_value(ae::Pixel8 { alpha: 255, red: to_u8(legacy_r), green: to_u8(legacy_g), blue: to_u8(legacy_b) });
+                        }),
+                        |p| {
+                            p.set_id(descriptor.id.ae_id());
+                            p.set_flag(ParamFlag::START_COLLAPSED, true);
+                            p.set_flag(ParamFlag::USE_VALUE_FOR_OLD_PROJECTS, true);
+                            -1
+                        },
+                    )?;
+                }
             }
         }
 
@@ -554,13 +617,13 @@ impl Plugin {
     fn apply_settings(
         &self,
         params: &mut Parameters<ParamID>,
-    ) -> Result<ExampleEffectFullSettings, Error> {
-        let mut settings = ExampleEffectFullSettings::default();
+    ) -> Result<EffectFullSettings, Error> {
+        let mut settings = EffectFullSettings::default();
 
         fn apply_settings_list(
-            descriptors: &[SettingDescriptor<ExampleEffectFullSettings>],
+            descriptors: &[SettingDescriptor<EffectFullSettings>],
             params: &mut Parameters<ParamID>,
-            settings: &mut ExampleEffectFullSettings,
+            settings: &mut EffectFullSettings,
         ) -> Result<(), Error> {
             for descriptor in descriptors {
                 match &descriptor.kind {
@@ -645,6 +708,25 @@ impl Plugin {
                             .map_err(|_| Error::BadCallbackParameter)?;
 
                         apply_settings_list(children, params, settings)?;
+                    }
+                    SettingKind::ColorRGBA { r_id, g_id, b_id, a_id } => {
+                        let color = params
+                            .get(ParamID::Param(descriptor.id.ae_id()))?
+                            .as_color()?
+                            .value();
+                        settings.set_field::<f32>(r_id, color.red as f32 / 255.0).map_err(|_| Error::BadCallbackParameter)?;
+                        settings.set_field::<f32>(g_id, color.green as f32 / 255.0).map_err(|_| Error::BadCallbackParameter)?;
+                        settings.set_field::<f32>(b_id, color.blue as f32 / 255.0).map_err(|_| Error::BadCallbackParameter)?;
+                        settings.set_field::<f32>(a_id, color.alpha as f32 / 255.0).map_err(|_| Error::BadCallbackParameter)?;
+                    }
+                    SettingKind::ColorRGB { r_id, g_id, b_id } => {
+                        let color = params
+                            .get(ParamID::Param(descriptor.id.ae_id()))?
+                            .as_color()?
+                            .value();
+                        settings.set_field::<f32>(r_id, color.red as f32 / 255.0).map_err(|_| Error::BadCallbackParameter)?;
+                        settings.set_field::<f32>(g_id, color.green as f32 / 255.0).map_err(|_| Error::BadCallbackParameter)?;
+                        settings.set_field::<f32>(b_id, color.blue as f32 / 255.0).map_err(|_| Error::BadCallbackParameter)?;
                     }
                 }
             }
