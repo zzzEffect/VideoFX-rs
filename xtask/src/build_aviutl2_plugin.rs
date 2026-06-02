@@ -73,8 +73,7 @@ information = \"VideoFX-rs multi-effect plugin for AviUtl2\"
 
 pub fn command() -> clap::Command {
     clap::Command::new("build-aviutl2-plugin")
-        .about("Builds the AviUtl2 filter plugin (.auf2), generates language files, and packages into .au2pkg.zip.")
-        .arg(
+        .about("Builds the AviUtl2 filter plugin (.aux2), generates language files, and packages into .au2pkg.zip.")
             clap::Arg::new("release")
                 .long("release")
                 .help("Build in release mode")

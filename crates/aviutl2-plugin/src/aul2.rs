@@ -2,7 +2,7 @@ use std::io;
 use std::path::Path;
 
 /// Generates the English .aul2 file content.
-/// Since English is the default (labels come from `ExTrKey::en()`),
+/// Since English is the default (labels come from `label_key.en()`),
 /// this file maps the default English names back to themselves.
 pub fn generate_aul2_en() -> String {
     let mut out = String::new();

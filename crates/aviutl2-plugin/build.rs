@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn main() {
-    println!("cargo::rustc-check-cfg=cfg(gpu_available)");
+    println!("cargo:rustc-check-cfg=cfg(gpu_available)");
 
     if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;

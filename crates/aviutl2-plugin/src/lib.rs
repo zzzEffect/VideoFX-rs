@@ -27,11 +27,11 @@ struct VideoFxPlugin {
 
 impl GenericPlugin for VideoFxPlugin {
     fn new(info: AviUtl2Info) -> Result<Self> {
-        aviutl2::tracing_subscriber::fmt()
+        let _ = aviutl2::tracing_subscriber::fmt()
             .with_max_level(aviutl2::tracing::Level::WARN)
             .event_format(aviutl2::logger::AviUtl2Formatter)
             .with_writer(aviutl2::logger::AviUtl2LogWriter)
-            .init();
+            .try_init();
 
         video_fx::i18n::set_lang(video_fx::i18n::detect_system_lang());
         let example_filter = SubPlugin::<ExampleFilter>::new_filter_plugin(&info)?;

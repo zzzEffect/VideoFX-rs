@@ -2,8 +2,8 @@
 // Logic matches crates/videofx/shaders/standard.wgsl exactly.
 //
 // Binding model (AviUtl2 exec_computeshader_data):
-//   resources[0]  = ReadableImageResource::Object  → register(t0) SRV
-//   targets[0]    = ShaderTargetResource::Object   → register(u0) UAV
+//   resources[0]  = ReadableImageResource::Resource("video_fx_input") → register(t0) SRV
+//   targets[0]    = ShaderTargetResource::Object                      → register(u0) UAV
 //   constant: T   = cbuffer at register(b0)
 //
 // Input/Output: R8G8B8A8_UNORM → Texture2D<float4> / RWTexture2D<unorm float4>
