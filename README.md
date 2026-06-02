@@ -1,6 +1,6 @@
 # VideoFX-rs — Rust Video Plugin Framework
 
-A general-purpose framework for building cross-host video effect plugins in Rust. Derived from [ntsc-rs](https://github.com/valadaptive/ntsc-rs), VideoFX-rs provides the infrastructure for creating effects that target After Effects, Premiere, and OpenFX hosts (such as VEGAS Pro, DaVinci Resolve, etc.).
+A general-purpose framework for building cross-host video effect plugins in Rust. Derived from [ntsc-rs](https://github.com/valadaptive/ntsc-rs), VideoFX-rs provides the infrastructure for creating effects that target After Effects, Premiere, OpenFX hosts (such as VEGAS Pro, DaVinci Resolve), and AviUtl2 (ExEdit2).
 
 ## Structure
 
@@ -10,9 +10,10 @@ VideoFX-rs/
 │   ├── videofx/                 # Core library (settings, i18n, GPU, effects)
 │   ├── macros/                  # Proc macro: #[derive(FullSettings)]
 │   ├── ae-plugin/               # After Effects / Premiere plugin (cdylib)
-│   └── openfx-plugin/           # OpenFX plugin (cdylib)
-│       └── vendor/
-│           └── openfx/          # OpenFX SDK (git submodule)
+│   ├── openfx-plugin/           # OpenFX plugin (cdylib)
+│   │   └── vendor/
+│   │       └── openfx/          # OpenFX SDK (git submodule)
+│   └── aviutl2-plugin/          # AviUtl2 filter plugin (cdylib, Windows only)
 └── xtask/                       # Build & bundle helper (cargo xtask)
 ```
 
@@ -22,6 +23,7 @@ VideoFX-rs/
 |------|---------------|---------------|
 | After Effects / Premiere | `ae-plugin` | `cargo build -p video-fx-ae-plugin` |
 | OpenFX (Resolve, VEGAS, etc.) | `openfx-plugin` | `cargo xtask build-ofx-plugin` |
+| AviUtl2 (ExEdit2) | `aviutl2-plugin` | `cargo xtask build-aviutl2-plugin --release` |
 
 ## Quick Start
 
@@ -86,6 +88,9 @@ cargo xtask build-ofx-plugin --release
 # To install it, copy + rename the .dll to:
 # C:\Program Files\Adobe\Common\Plug-ins\7.0\MediaCore\VideoFx.aex
 cargo build -p video-fx-ae-plugin --release
+
+# Build the AviUtl2 filter plugin (output: `crates/aviutl2-plugin/build/VideoFX-rs.au2pkg.zip`)
+cargo xtask build-aviutl2-plugin --release
 ```
 
 #### macOS
@@ -122,7 +127,7 @@ pub struct MyEffect {
 
 ### 2. Implement the `Settings` trait with `setting_descriptors()`
 
-This provides introspectable parameter descriptions used by both AE and OFX plugin hosts.
+This provides introspectable parameter descriptions used by AE, OFX, and AviUtl2 plugin hosts.
 
 ### 3. Write the effect render function
 
@@ -136,7 +141,7 @@ impl MyEffect {
 
 ### 4. Plugins automatically map parameters
 
-Both `ae-plugin` and `openfx-plugin` use the generic `SettingsList` to:
+`ae-plugin`, `openfx-plugin`, and `aviutl2-plugin` use the generic `SettingsList` to:
 - Generate host-specific UI controls (sliders, checkboxes, dropdowns)
 - Read parameter values back during render
 - Support preset load/save (JSON)
@@ -171,6 +176,16 @@ Copy the built `.aex` to:
 - `C:\Program Files\Adobe\Common\Plug-ins\7.0\MediaCore\`
 
 The plugin appears as **"VideoFx Effect"** under the **"Example"** category.
+
+### AviUtl2
+
+Drag `VideoFX-rs.au2pkg.zip` onto the AviUtl2 preview window, or extract the contents into the AviUtl2 installation directory:
+
+- `Plugin/VideoFX.aux2` — the filter plugin
+- `Language/English.video_fx_aviutl2_plugin.aul2` — English labels
+- `Language/简体中文.video_fx_aviutl2_plugin.aul2` — Chinese labels
+
+After a restart, the effects appear in ExEdit2's filter list as **"VideoFX Example Effect"** and **"VideoFX Solid Color Blend"**.
 
 ## License
 
