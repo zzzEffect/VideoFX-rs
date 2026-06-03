@@ -21,7 +21,7 @@ VideoFX-rs/
 
 | Host | Example Crate | Build Command |
 |------|---------------|---------------|
-| After Effects / Premiere | `ae-plugin` | `cargo build -p video-fx-ae-plugin --features color-adjustment` |
+| After Effects / Premiere | `ae-plugin` | `cargo build -p video-fx-ae-plugin` |
 | OpenFX (Resolve, VEGAS, etc.) | `openfx-plugin` | `cargo xtask build-ofx-plugin` |
 | AviUtl2 (ExEdit2) | `aviutl2-plugin` | `cargo xtask build-aviutl2-plugin --release` |
 
@@ -92,15 +92,11 @@ After installing Rust and cloning the repository, the steps are platform-specifi
 # Contains both effects in a single bundle.
 cargo xtask build-ofx-plugin --release
 
-# Build the After Effects plugin — Color Adjustment
+# Build the After Effects plugin (both effects in a single .aex)
 # The output DLL is `target/release/video_fx_ae_plugin.dll`.
 # Rename and copy to:
-# C:\Program Files\Adobe\Common\Plug-ins\7.0\MediaCore\VideoFXExampleColorAdjustment.aex
-cargo build -p video-fx-ae-plugin --features color-adjustment --release
-
-# Build the After Effects plugin — Solid Blend
-# Rename the DLL to VideoFXExampleSolidBlend.aex and copy alongside.
-cargo build -p video-fx-ae-plugin --no-default-features --features solid-blend --release
+# C:\Program Files\Adobe\Common\Plug-ins\7.0\MediaCore\VideoFX.aex
+cargo build -p video-fx-ae-plugin --release
 
 # Build the AviUtl2 filter plugin (output: `crates/aviutl2-plugin/build/VideoFX-rs.au2pkg.zip`)
 cargo xtask build-aviutl2-plugin --release
@@ -112,7 +108,7 @@ cargo xtask build-aviutl2-plugin --release
 # Build the OpenFX plugin (output will be in `crates/openfx-plugin/build`)
 cargo xtask build-ofx-plugin --macos-universal --release
 
-# Build and bundle both After Effects plugins (output will be in the `build` folder)
+# Build and bundle the After Effects plugin (output will be in the `build` folder)
 cargo xtask macos-ae-plugin --macos-universal --release
 ```
 
@@ -188,7 +184,7 @@ The bundle contains both effects under the **"VideoFX Example"** category.
 
 ### After Effects / Premiere
 
-Copy the built `.aex` files to:
+Copy the built `.aex` file to:
 - `C:\Program Files\Adobe\Common\Plug-ins\7.0\MediaCore\`
 
 The plugins appear under the **"VideoFX Example"** category as **"VideoFX Example Color Adjustment"** and **"VideoFX Example Solid Blend"**.

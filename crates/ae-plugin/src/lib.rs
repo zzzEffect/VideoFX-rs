@@ -1,6 +1,6 @@
 #![cfg(any(windows, target_os = "macos"))]
 
-mod handle;
+use std::sync::atomic::{AtomicU8, Ordering};
 
 use after_effects::{self as ae};
 use example_effects::{
@@ -8,39 +8,64 @@ use example_effects::{
     settings::{
         EnumValue, SettingDescriptor, SettingKind, SettingID, Settings, SettingsList,
     },
+    ColorAdjustment, ColorAdjustmentFullSettings, SolidColorBlend, SolidColorBlendFullSettings,
 };
 
-#[cfg(feature = "color-adjustment")]
-use example_effects::{ColorAdjustment, ColorAdjustmentFullSettings};
-#[cfg(feature = "solid-blend")]
-use example_effects::{SolidColorBlend, SolidColorBlendFullSettings};
-
 // ---------------------------------------------------------------------------
-// Type aliases based on feature
+// Multi-effect dispatch
 // ---------------------------------------------------------------------------
 
-#[cfg(feature = "color-adjustment")]
-type Effect = ColorAdjustment;
-#[cfg(feature = "color-adjustment")]
-type EffectFullSettings = ColorAdjustmentFullSettings;
+#[repr(u8)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EffectType {
+    ColorAdjustment = 0,
+    SolidBlend = 1,
+}
 
-#[cfg(feature = "solid-blend")]
-type Effect = SolidColorBlend;
-#[cfg(feature = "solid-blend")]
-type EffectFullSettings = SolidColorBlendFullSettings;
+static ACTIVE_EFFECT: AtomicU8 = AtomicU8::new(EffectType::ColorAdjustment as u8);
+
+fn active_effect() -> EffectType {
+    match ACTIVE_EFFECT.load(Ordering::Acquire) {
+        0 => EffectType::ColorAdjustment,
+        1 => EffectType::SolidBlend,
+        _ => EffectType::ColorAdjustment,
+    }
+}
+
+macro_rules! effect_entry {
+    ($fn:ident, $eff:expr) => {
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $fn(
+            cmd: ae::sys::PF_Cmd,
+            in_data: *mut ae::sys::PF_InData,
+            out_data: *mut ae::sys::PF_OutData,
+            params: *mut *mut ae::sys::PF_ParamDef,
+            output: *mut ae::sys::PF_LayerDef,
+            extra: *mut std::ffi::c_void,
+        ) -> ae::sys::PF_Err {
+            ACTIVE_EFFECT.store($eff as u8, Ordering::Release);
+            unsafe { EffectMain(cmd, in_data, out_data, params, output, extra) }
+        }
+    };
+}
+
+effect_entry!(EffectMainColorAdjustment, EffectType::ColorAdjustment);
+effect_entry!(EffectMainSolidBlend, EffectType::SolidBlend);
 
 // ---------------------------------------------------------------------------
 // Plugin struct
 // ---------------------------------------------------------------------------
 
 struct Plugin {
-    settings: SettingsList<EffectFullSettings>,
+    color_adjustment: SettingsList<ColorAdjustmentFullSettings>,
+    solid_blend: SettingsList<SolidColorBlendFullSettings>,
 }
 
 impl Default for Plugin {
     fn default() -> Self {
         Self {
-            settings: SettingsList::<EffectFullSettings>::new(),
+            color_adjustment: SettingsList::<ColorAdjustmentFullSettings>::new(),
+            solid_blend: SettingsList::<SolidColorBlendFullSettings>::new(),
         }
     }
 }
@@ -102,13 +127,24 @@ impl AdobePluginGlobal for Plugin {
         _in_data: InData,
         _out_data: OutData,
     ) -> Result<(), Error> {
-        Self::map_params(
-            params,
-            &self.settings.setting_descriptors,
-            &EffectFullSettings::default(),
-            &EffectFullSettings::legacy_value(),
-        )?;
-
+        match active_effect() {
+            EffectType::ColorAdjustment => {
+                Self::map_params(
+                    params,
+                    &self.color_adjustment.setting_descriptors,
+                    &ColorAdjustmentFullSettings::default(),
+                    &ColorAdjustmentFullSettings::legacy_value(),
+                )?;
+            }
+            EffectType::SolidBlend => {
+                Self::map_params(
+                    params,
+                    &self.solid_blend.setting_descriptors,
+                    &SolidColorBlendFullSettings::default(),
+                    &SolidColorBlendFullSettings::legacy_value(),
+                )?;
+            }
+        }
         Ok(())
     }
 
@@ -130,13 +166,25 @@ impl AdobePluginGlobal for Plugin {
             Command::SmartRender { extra } => {
                 self.smart_render(in_data, out_data, extra, params)?
             }
-            Command::UpdateParamsUi => {
-                Self::update_controls_disabled(params, &self.settings.setting_descriptors, true)?
-            }
+            Command::UpdateParamsUi => match active_effect() {
+                EffectType::ColorAdjustment => {
+                    Self::update_controls_disabled(
+                        params,
+                        &self.color_adjustment.setting_descriptors,
+                        true,
+                    )?;
+                }
+                EffectType::SolidBlend => {
+                    Self::update_controls_disabled(
+                        params,
+                        &self.solid_blend.setting_descriptors,
+                        true,
+                    )?;
+                }
+            },
             Command::GetFlattenedSequenceData => {}
             _ => {}
         }
-
         Ok(())
     }
 }
@@ -173,26 +221,23 @@ impl Plugin {
             pf.add_supported_pixel_format(in_data.effect_ref(), pr::PixelFormat::Bgra4444_16u)?;
             pf.add_supported_pixel_format(in_data.effect_ref(), pr::PixelFormat::Bgra4444_32f)?;
         }
-
         Ok(())
     }
 
     fn about(&self, _in_data: InData, mut out_data: OutData) -> Result<(), Error> {
-        #[cfg(feature = "color-adjustment")]
-        const DESCRIPTION: &str =
-            "VideoFX Example Color Adjustment — brightness, tint, contrast, saturation.";
-        #[cfg(feature = "solid-blend")]
-        const DESCRIPTION: &str =
-            "VideoFX Example Solid Blend — solid color overlay with blend modes.";
-
-        #[cfg(feature = "color-adjustment")]
-        const NAME: &str = "VideoFX Example Color Adjustment";
-        #[cfg(feature = "solid-blend")]
-        const NAME: &str = "VideoFX Example Solid Blend";
-
+        let (name, desc) = match active_effect() {
+            EffectType::ColorAdjustment => (
+                "VideoFX Example Color Adjustment",
+                "Brightness, tint, contrast, saturation adjustments.",
+            ),
+            EffectType::SolidBlend => (
+                "VideoFX Example Solid Blend",
+                "Solid color overlay with blend modes.",
+            ),
+        };
         out_data.set_return_msg(
             format!(
-                "{NAME} {}.{}.{}\r\r{DESCRIPTION}",
+                "{name} {}.{}.{}\r\r{desc}",
                 env!("EFFECT_VERSION_MAJOR"),
                 env!("EFFECT_VERSION_MINOR"),
                 env!("EFFECT_VERSION_PATCH")
@@ -253,13 +298,10 @@ impl Plugin {
         if !in_data.is_premiere() {
             return Err(Error::BadCallbackParameter);
         }
-
         if in_layer.width() != out_layer.width() || in_layer.height() != out_layer.height() {
             return Err(Error::BadCallbackParameter);
         }
-
         self.do_render(in_layer, out_layer, params)?;
-
         Ok(())
     }
 
@@ -276,7 +318,6 @@ impl Plugin {
         let Some(output_world) = extra.callbacks().checkout_output()? else {
             return Ok(());
         };
-
         self.do_render(input_world, output_world, params)
     }
 
@@ -286,8 +327,6 @@ impl Plugin {
         mut out_layer: Layer,
         params: &mut Parameters<ParamID>,
     ) -> Result<(), Error> {
-        let effect: Effect = self.apply_settings(params)?.into();
-
         let src_row_bytes = in_layer.row_bytes();
         let height = in_layer.height().min(out_layer.height()) as usize;
         let width = in_layer.width().min(out_layer.width()) as usize;
@@ -299,7 +338,7 @@ impl Plugin {
             -src_row_bytes as usize
         };
 
-        let row_bytes = (width as usize) * pixel_size;
+        let row_bytes = width * pixel_size;
         let total = width * height * 4;
 
         let src_buf = in_layer.buffer();
@@ -318,8 +357,32 @@ impl Plugin {
             }
         }
 
+        // AE uses ARGB; effect uses RGBA. Swap before and after.
+        for px in src_contig.chunks_exact_mut(4) {
+            let a = px[0]; let r = px[1]; let g = px[2]; let b = px[3];
+            px[0] = r; px[1] = g; px[2] = b; px[3] = a;
+        }
+
         let mut dst_contig = vec![0u8; total];
-        effect.apply_effect(&src_contig, &mut dst_contig, width, height);
+
+        match active_effect() {
+            EffectType::ColorAdjustment => {
+                let settings = self.apply_settings_ca(params)?;
+                let effect: ColorAdjustment = (&settings).into();
+                effect.apply_effect(&src_contig, &mut dst_contig, width, height);
+            }
+            EffectType::SolidBlend => {
+                let settings = self.apply_settings_sb(params)?;
+                let effect: SolidColorBlend = (&settings).into();
+                effect.apply_effect(&src_contig, &mut dst_contig, width, height);
+            }
+        }
+
+        // Convert RGBA back to AE's ARGB
+        for px in dst_contig.chunks_exact_mut(4) {
+            let r = px[0]; let g = px[1]; let b = px[2]; let a = px[3];
+            px[0] = a; px[1] = r; px[2] = g; px[3] = b;
+        }
 
         for y in 0..height {
             let src_offset = y * src_stride;
@@ -336,13 +399,39 @@ impl Plugin {
         Ok(())
     }
 
+    fn apply_settings_ca(
+        &self,
+        params: &mut Parameters<ParamID>,
+    ) -> Result<ColorAdjustmentFullSettings, Error> {
+        let mut settings = ColorAdjustmentFullSettings::default();
+        apply_settings_list(
+            &self.color_adjustment.setting_descriptors,
+            params,
+            &mut settings,
+        )?;
+        Ok(settings)
+    }
+
+    fn apply_settings_sb(
+        &self,
+        params: &mut Parameters<ParamID>,
+    ) -> Result<SolidColorBlendFullSettings, Error> {
+        let mut settings = SolidColorBlendFullSettings::default();
+        apply_settings_list(
+            &self.solid_blend.setting_descriptors,
+            params,
+            &mut settings,
+        )?;
+        Ok(settings)
+    }
+
     // -----------------------------------------------------------------------
-    // Parameter mapping
+    // Parameter mapping (generic over any Settings type)
     // -----------------------------------------------------------------------
 
-    fn update_controls_disabled(
+    fn update_controls_disabled<T: Settings>(
         params: &mut Parameters<ParamID>,
-        descriptors: &[SettingDescriptor<EffectFullSettings>],
+        descriptors: &[SettingDescriptor<T>],
         enabled: bool,
     ) -> Result<(), Error> {
         for descriptor in descriptors {
@@ -355,7 +444,6 @@ impl Plugin {
             }
             if let Ok(p) = params.get(ParamID::Param(descriptor.id.ae_id())) {
                 let was_enabled = !p.ui_flags().contains(ParamUIFlags::DISABLED);
-
                 if was_enabled != enabled {
                     let mut p = p.clone();
                     p.set_ui_flag(ParamUIFlags::DISABLED, !enabled);
@@ -363,21 +451,20 @@ impl Plugin {
                 }
             }
         }
-
         Ok(())
     }
 
-    fn map_params(
+    fn map_params<T: Settings<Key = i18n::ExTrKey>>(
         params: &mut Parameters<ParamID>,
-        descriptors: &[SettingDescriptor<EffectFullSettings>],
-        default_settings: &EffectFullSettings,
-        legacy_default_settings: &EffectFullSettings,
+        descriptors: &[SettingDescriptor<T>],
+        default_settings: &T,
+        legacy_default_settings: &T,
     ) -> Result<(), Error> {
-        fn get_defaults<T: example_effects::settings::SettingField + 'static>(
-            defaults: &EffectFullSettings,
-            legacy_defaults: &EffectFullSettings,
-            descriptor: &SettingDescriptor<EffectFullSettings>,
-        ) -> Result<[T; 2], Error> {
+        fn get_defaults<T: Settings, V: example_effects::settings::SettingField + 'static>(
+            defaults: &T,
+            legacy_defaults: &T,
+            descriptor: &SettingDescriptor<T>,
+        ) -> Result<[V; 2], Error> {
             Ok([
                 defaults
                     .get_field(&descriptor.id)
@@ -391,7 +478,7 @@ impl Plugin {
         for descriptor in descriptors {
             match &descriptor.kind {
                 SettingKind::Enumeration { options } => {
-                    let [default_idx, legacy_default_idx] = get_defaults::<EnumValue>(
+                    let [default_idx, legacy_default_idx] = get_defaults::<T, EnumValue>(
                         default_settings,
                         legacy_default_settings,
                         descriptor,
@@ -420,7 +507,7 @@ impl Plugin {
                     )?;
                 }
                 SettingKind::Percentage { logarithmic } => {
-                    let [default_value, legacy_default_value] = get_defaults::<f32>(
+                    let [default_value, legacy_default_value] = get_defaults::<T, f32>(
                         default_settings,
                         legacy_default_settings,
                         descriptor,
@@ -454,7 +541,7 @@ impl Plugin {
                 }
                 SettingKind::IntRange { range } => {
                     let [default_value, legacy_default_value] =
-                        get_defaults::<i32>(default_settings, legacy_default_settings, descriptor)?;
+                        get_defaults::<T, i32>(default_settings, legacy_default_settings, descriptor)?;
                     params.add_customized(
                         ParamID::Param(descriptor.id.ae_id()),
                         i18n::tr(descriptor.label_key),
@@ -477,7 +564,7 @@ impl Plugin {
                 }
                 SettingKind::FloatRange { range, logarithmic } => {
                     let [default_value, legacy_default_value] =
-                        get_defaults::<f32>(default_settings, legacy_default_settings, descriptor)?
+                        get_defaults::<T, f32>(default_settings, legacy_default_settings, descriptor)?
                             .map(|default| match (*logarithmic, default as f64) {
                                 (true, v) => map_logarithmic_inverse(
                                     v,
@@ -508,7 +595,7 @@ impl Plugin {
                     )?
                 }
                 SettingKind::Boolean => {
-                    let [default_value, legacy_default_value] = get_defaults::<bool>(
+                    let [default_value, legacy_default_value] = get_defaults::<T, bool>(
                         default_settings,
                         legacy_default_settings,
                         descriptor,
@@ -531,7 +618,7 @@ impl Plugin {
                 }
                 SettingKind::Group { children } => {
                     let descriptor_id = descriptor.id.ae_id();
-                    let [default_value, legacy_default_value] = get_defaults::<bool>(
+                    let [default_value, legacy_default_value] = get_defaults::<T, bool>(
                         default_settings,
                         legacy_default_settings,
                         descriptor,
@@ -568,10 +655,14 @@ impl Plugin {
                     )?;
                 }
                 SettingKind::ColorRGBA { r_id, g_id, b_id, a_id } => {
-                    let [default_r, legacy_r] = get_defaults::<f32>(default_settings, legacy_default_settings, &SettingDescriptor { label_key: descriptor.label_key, description_key: descriptor.description_key, kind: SettingKind::Percentage { logarithmic: false }, id: r_id.clone() })?;
-                    let [default_g, legacy_g] = get_defaults::<f32>(default_settings, legacy_default_settings, &SettingDescriptor { label_key: descriptor.label_key, description_key: descriptor.description_key, kind: SettingKind::Percentage { logarithmic: false }, id: g_id.clone() })?;
-                    let [default_b, legacy_b] = get_defaults::<f32>(default_settings, legacy_default_settings, &SettingDescriptor { label_key: descriptor.label_key, description_key: descriptor.description_key, kind: SettingKind::Percentage { logarithmic: false }, id: b_id.clone() })?;
-                    let [default_a, legacy_a] = get_defaults::<f32>(default_settings, legacy_default_settings, &SettingDescriptor { label_key: descriptor.label_key, description_key: descriptor.description_key, kind: SettingKind::Percentage { logarithmic: false }, id: a_id.clone() })?;
+                    let default_r: f32 = default_settings.get_field(r_id).map_err(|_| Error::BadCallbackParameter)?;
+                    let legacy_r: f32 = legacy_default_settings.get_field(r_id).map_err(|_| Error::BadCallbackParameter)?;
+                    let default_g: f32 = default_settings.get_field(g_id).map_err(|_| Error::BadCallbackParameter)?;
+                    let legacy_g: f32 = legacy_default_settings.get_field(g_id).map_err(|_| Error::BadCallbackParameter)?;
+                    let default_b: f32 = default_settings.get_field(b_id).map_err(|_| Error::BadCallbackParameter)?;
+                    let legacy_b: f32 = legacy_default_settings.get_field(b_id).map_err(|_| Error::BadCallbackParameter)?;
+                    let default_a: f32 = default_settings.get_field(a_id).map_err(|_| Error::BadCallbackParameter)?;
+                    let legacy_a: f32 = legacy_default_settings.get_field(a_id).map_err(|_| Error::BadCallbackParameter)?;
                     let to_u8 = |v: f32| -> u8 { (v.clamp(0.0, 1.0) * 255.0).round() as u8 };
                     params.add_customized(
                         ParamID::Param(descriptor.id.ae_id()),
@@ -589,9 +680,12 @@ impl Plugin {
                     )?;
                 }
                 SettingKind::ColorRGB { r_id, g_id, b_id } => {
-                    let [default_r, legacy_r] = get_defaults::<f32>(default_settings, legacy_default_settings, &SettingDescriptor { label_key: descriptor.label_key, description_key: descriptor.description_key, kind: SettingKind::Percentage { logarithmic: false }, id: r_id.clone() })?;
-                    let [default_g, legacy_g] = get_defaults::<f32>(default_settings, legacy_default_settings, &SettingDescriptor { label_key: descriptor.label_key, description_key: descriptor.description_key, kind: SettingKind::Percentage { logarithmic: false }, id: g_id.clone() })?;
-                    let [default_b, legacy_b] = get_defaults::<f32>(default_settings, legacy_default_settings, &SettingDescriptor { label_key: descriptor.label_key, description_key: descriptor.description_key, kind: SettingKind::Percentage { logarithmic: false }, id: b_id.clone() })?;
+                    let default_r: f32 = default_settings.get_field(r_id).map_err(|_| Error::BadCallbackParameter)?;
+                    let legacy_r: f32 = legacy_default_settings.get_field(r_id).map_err(|_| Error::BadCallbackParameter)?;
+                    let default_g: f32 = default_settings.get_field(g_id).map_err(|_| Error::BadCallbackParameter)?;
+                    let legacy_g: f32 = legacy_default_settings.get_field(g_id).map_err(|_| Error::BadCallbackParameter)?;
+                    let default_b: f32 = default_settings.get_field(b_id).map_err(|_| Error::BadCallbackParameter)?;
+                    let legacy_b: f32 = legacy_default_settings.get_field(b_id).map_err(|_| Error::BadCallbackParameter)?;
                     let to_u8 = |v: f32| -> u8 { (v.clamp(0.0, 1.0) * 255.0).round() as u8 };
                     params.add_customized(
                         ParamID::Param(descriptor.id.ae_id()),
@@ -610,132 +704,123 @@ impl Plugin {
                 }
             }
         }
-
         Ok(())
     }
+}
 
-    fn apply_settings(
-        &self,
-        params: &mut Parameters<ParamID>,
-    ) -> Result<EffectFullSettings, Error> {
-        let mut settings = EffectFullSettings::default();
+// -----------------------------------------------------------------------
+// Generic apply_settings (works with any Settings type)
+// -----------------------------------------------------------------------
 
-        fn apply_settings_list(
-            descriptors: &[SettingDescriptor<EffectFullSettings>],
-            params: &mut Parameters<ParamID>,
-            settings: &mut EffectFullSettings,
-        ) -> Result<(), Error> {
-            for descriptor in descriptors {
-                match &descriptor.kind {
-                    SettingKind::Enumeration { options, .. } => {
-                        let selected_item_position = params
-                            .get(ParamID::Param(descriptor.id.ae_id()))?
-                            .as_popup()?
-                            .value()
-                            - 1;
-                        if selected_item_position < 0 {
-                            continue;
-                        }
-                        let menu_enum_value = options[selected_item_position as usize].index;
-                        settings
-                            .set_field::<EnumValue>(&descriptor.id, EnumValue(menu_enum_value))
-                            .map_err(|_| Error::BadCallbackParameter)?;
-                    }
-                    SettingKind::Percentage { logarithmic, .. } => {
-                        let mut slider_value = params
-                            .get(ParamID::Param(descriptor.id.ae_id()))?
-                            .as_float_slider()?
-                            .value()
-                            * 0.01;
-
-                        if *logarithmic {
-                            slider_value = map_logarithmic(slider_value, 0.0, 1.0, LOG_SLIDER_BASE);
-                        }
-                        settings
-                            .set_field::<f32>(&descriptor.id, slider_value as f32)
-                            .map_err(|_| Error::BadCallbackParameter)?;
-                    }
-                    SettingKind::IntRange { .. } => {
-                        let slider_value = params
-                            .get(ParamID::Param(descriptor.id.ae_id()))?
-                            .as_float_slider()?
-                            .value()
-                            .round() as i32;
-                        settings
-                            .set_field::<i32>(&descriptor.id, slider_value)
-                            .map_err(|_| Error::BadCallbackParameter)?;
-                    }
-                    SettingKind::FloatRange {
-                        logarithmic, range, ..
-                    } => {
-                        let mut slider_value = params
-                            .get(ParamID::Param(descriptor.id.ae_id()))?
-                            .as_float_slider()?
-                            .value();
-
-                        if *logarithmic {
-                            slider_value = map_logarithmic(
-                                slider_value,
-                                *range.start() as f64,
-                                *range.end() as f64,
-                                LOG_SLIDER_BASE,
-                            );
-                        }
-                        settings
-                            .set_field::<f32>(&descriptor.id, slider_value as f32)
-                            .map_err(|_| Error::BadCallbackParameter)?;
-                    }
-                    SettingKind::Boolean => {
-                        settings
-                            .set_field::<bool>(
-                                &descriptor.id,
-                                params
-                                    .get(ParamID::Param(descriptor.id.ae_id()))?
-                                    .as_checkbox()?
-                                    .value(),
-                            )
-                            .map_err(|_| Error::BadCallbackParameter)?;
-                    }
-                    SettingKind::Group { children, .. } => {
-                        settings
-                            .set_field::<bool>(
-                                &descriptor.id,
-                                params
-                                    .get(ParamID::Param(descriptor.id.ae_id()))?
-                                    .as_checkbox()?
-                                    .value(),
-                            )
-                            .map_err(|_| Error::BadCallbackParameter)?;
-
-                        apply_settings_list(children, params, settings)?;
-                    }
-                    SettingKind::ColorRGBA { r_id, g_id, b_id, a_id } => {
-                        let color = params
-                            .get(ParamID::Param(descriptor.id.ae_id()))?
-                            .as_color()?
-                            .value();
-                        settings.set_field::<f32>(r_id, color.red as f32 / 255.0).map_err(|_| Error::BadCallbackParameter)?;
-                        settings.set_field::<f32>(g_id, color.green as f32 / 255.0).map_err(|_| Error::BadCallbackParameter)?;
-                        settings.set_field::<f32>(b_id, color.blue as f32 / 255.0).map_err(|_| Error::BadCallbackParameter)?;
-                        settings.set_field::<f32>(a_id, color.alpha as f32 / 255.0).map_err(|_| Error::BadCallbackParameter)?;
-                    }
-                    SettingKind::ColorRGB { r_id, g_id, b_id } => {
-                        let color = params
-                            .get(ParamID::Param(descriptor.id.ae_id()))?
-                            .as_color()?
-                            .value();
-                        settings.set_field::<f32>(r_id, color.red as f32 / 255.0).map_err(|_| Error::BadCallbackParameter)?;
-                        settings.set_field::<f32>(g_id, color.green as f32 / 255.0).map_err(|_| Error::BadCallbackParameter)?;
-                        settings.set_field::<f32>(b_id, color.blue as f32 / 255.0).map_err(|_| Error::BadCallbackParameter)?;
-                    }
+fn apply_settings_list<T: Settings>(
+    descriptors: &[SettingDescriptor<T>],
+    params: &mut Parameters<ParamID>,
+    settings: &mut T,
+) -> Result<(), Error> {
+    for descriptor in descriptors {
+        match &descriptor.kind {
+            SettingKind::Enumeration { options, .. } => {
+                let selected_item_position = params
+                    .get(ParamID::Param(descriptor.id.ae_id()))?
+                    .as_popup()?
+                    .value()
+                    - 1;
+                if selected_item_position < 0 {
+                    continue;
                 }
+                let menu_enum_value = options[selected_item_position as usize].index;
+                settings
+                    .set_field::<EnumValue>(&descriptor.id, EnumValue(menu_enum_value))
+                    .map_err(|_| Error::BadCallbackParameter)?;
             }
+            SettingKind::Percentage { logarithmic, .. } => {
+                let mut slider_value = params
+                    .get(ParamID::Param(descriptor.id.ae_id()))?
+                    .as_float_slider()?
+                    .value()
+                    * 0.01;
 
-            Ok(())
+                if *logarithmic {
+                    slider_value = map_logarithmic(slider_value, 0.0, 1.0, LOG_SLIDER_BASE);
+                }
+                settings
+                    .set_field::<f32>(&descriptor.id, slider_value as f32)
+                    .map_err(|_| Error::BadCallbackParameter)?;
+            }
+            SettingKind::IntRange { .. } => {
+                let slider_value = params
+                    .get(ParamID::Param(descriptor.id.ae_id()))?
+                    .as_float_slider()?
+                    .value()
+                    .round() as i32;
+                settings
+                    .set_field::<i32>(&descriptor.id, slider_value)
+                    .map_err(|_| Error::BadCallbackParameter)?;
+            }
+            SettingKind::FloatRange {
+                logarithmic, range, ..
+            } => {
+                let mut slider_value = params
+                    .get(ParamID::Param(descriptor.id.ae_id()))?
+                    .as_float_slider()?
+                    .value();
+
+                if *logarithmic {
+                    slider_value = map_logarithmic(
+                        slider_value,
+                        *range.start() as f64,
+                        *range.end() as f64,
+                        LOG_SLIDER_BASE,
+                    );
+                }
+                settings
+                    .set_field::<f32>(&descriptor.id, slider_value as f32)
+                    .map_err(|_| Error::BadCallbackParameter)?;
+            }
+            SettingKind::Boolean => {
+                settings
+                    .set_field::<bool>(
+                        &descriptor.id,
+                        params
+                            .get(ParamID::Param(descriptor.id.ae_id()))?
+                            .as_checkbox()?
+                            .value(),
+                    )
+                    .map_err(|_| Error::BadCallbackParameter)?;
+            }
+            SettingKind::Group { children, .. } => {
+                settings
+                    .set_field::<bool>(
+                        &descriptor.id,
+                        params
+                            .get(ParamID::Param(descriptor.id.ae_id()))?
+                            .as_checkbox()?
+                            .value(),
+                    )
+                    .map_err(|_| Error::BadCallbackParameter)?;
+
+                apply_settings_list(children, params, settings)?;
+            }
+            SettingKind::ColorRGBA { r_id, g_id, b_id, a_id } => {
+                let color = params
+                    .get(ParamID::Param(descriptor.id.ae_id()))?
+                    .as_color()?
+                    .value();
+                settings.set_field::<f32>(r_id, color.red as f32 / 255.0).map_err(|_| Error::BadCallbackParameter)?;
+                settings.set_field::<f32>(g_id, color.green as f32 / 255.0).map_err(|_| Error::BadCallbackParameter)?;
+                settings.set_field::<f32>(b_id, color.blue as f32 / 255.0).map_err(|_| Error::BadCallbackParameter)?;
+                settings.set_field::<f32>(a_id, color.alpha as f32 / 255.0).map_err(|_| Error::BadCallbackParameter)?;
+            }
+            SettingKind::ColorRGB { r_id, g_id, b_id } => {
+                let color = params
+                    .get(ParamID::Param(descriptor.id.ae_id()))?
+                    .as_color()?
+                    .value();
+                settings.set_field::<f32>(r_id, color.red as f32 / 255.0).map_err(|_| Error::BadCallbackParameter)?;
+                settings.set_field::<f32>(g_id, color.green as f32 / 255.0).map_err(|_| Error::BadCallbackParameter)?;
+                settings.set_field::<f32>(b_id, color.blue as f32 / 255.0).map_err(|_| Error::BadCallbackParameter)?;
+            }
         }
-
-        apply_settings_list(&self.settings.setting_descriptors, params, &mut settings)?;
-
-        Ok(settings)
     }
+    Ok(())
 }

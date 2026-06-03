@@ -112,7 +112,6 @@ impl EffectKind for SolidBlendKind {
 // SharedData — one instance per effect kind
 // ---------------------------------------------------------------------------
 
-#[allow(dead_code)]
 struct HostInfo {
     host: &'static OfxPropertySetStruct,
     fetch_suite: unsafe extern "C" fn(
@@ -123,16 +122,13 @@ struct HostInfo {
 }
 
 struct SharedData<T: Settings> {
-    #[allow(dead_code)]
     host_info: HostInfo,
     property_suite: &'static OfxPropertySuiteV1,
     image_effect_suite: &'static OfxImageEffectSuiteV1,
     parameter_suite: &'static OfxParameterSuiteV1,
     settings_list: SettingsList<T>,
     supports_multiple_clip_depths: AtomicBool,
-    #[allow(dead_code)]
     strings: HashMap<SettingID<T>, (CString, CString, Option<CString>, Option<CString>)>,
-    #[allow(dead_code)]
     menu_item_strings: HashMap<(SettingID<T>, u32), (CString, Option<CString>)>,
 }
 
@@ -764,7 +760,30 @@ unsafe fn action_render_generic<K: EffectKind>(
         }
     }
 
+    // OFX hosts (e.g. VEGAS) use premultiplied alpha; effect works in straight.
+    // Convert premultiplied → straight before, and straight → premultiplied after.
+    {
+        for px in src_buf.chunks_exact_mut(4) {
+            let a_byte = px[3] as f32;
+            if a_byte > 0.0 {
+                let recip = 255.0 / a_byte;
+                px[0] = (px[0] as f32 * recip).clamp(0.0, 255.0).round() as u8;
+                px[1] = (px[1] as f32 * recip).clamp(0.0, 255.0).round() as u8;
+                px[2] = (px[2] as f32 * recip).clamp(0.0, 255.0).round() as u8;
+            }
+        }
+    }
+
     K::apply_effect(&settings, &src_buf, &mut dst_buf, width, height);
+
+    {
+        for px in dst_buf.chunks_exact_mut(4) {
+            let a = px[3] as f32 * (1.0 / 255.0);
+            px[0] = (px[0] as f32 * a).clamp(0.0, 255.0).round() as u8;
+            px[1] = (px[1] as f32 * a).clamp(0.0, 255.0).round() as u8;
+            px[2] = (px[2] as f32 * a).clamp(0.0, 255.0).round() as u8;
+        }
+    }
 
     match depth {
         4 => {

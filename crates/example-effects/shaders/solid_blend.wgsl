@@ -1,4 +1,4 @@
-// Solid color blend compute shader.
+// Solid color blend compute shader. Straight alpha.
 // Supports all 4 blend modes: Normal (0), Multiply (1), Screen (2), Overlay (3).
 // Pixels are packed as u32: 0xAA_BB_GG_RR in little-endian host memory.
 
@@ -86,7 +86,6 @@ fn solid_blend_main(@builtin(global_invocation_id) id: vec3<u32>) {
     dr = clamp(dr, 0.0, 1.0);
     dg = clamp(dg, 0.0, 1.0);
     db = clamp(db, 0.0, 1.0);
-
     let da = clamp(blend_alpha_channel(sa, a, inv, u.blend_mode), 0.0, 1.0);
 
     let out_r = u32(dr * 255.0 + 0.5);

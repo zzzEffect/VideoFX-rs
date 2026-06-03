@@ -81,13 +81,18 @@ impl Settings for SolidColorBlendFullSettings {
             SettingDescriptor {
                 label_key: ExTrKey::ParamColor,
                 description_key: Some(ExTrKey::ParamColorDesc),
-                kind: SettingKind::ColorRGBA {
+                kind: SettingKind::ColorRGB {
                     r_id: setting_id::COLOR_R,
                     g_id: setting_id::COLOR_G,
                     b_id: setting_id::COLOR_B,
-                    a_id: setting_id::COLOR_A,
                 },
                 id: setting_id::COLOR,
+            },
+            SettingDescriptor {
+                label_key: ExTrKey::ParamBlendAmount,
+                description_key: Some(ExTrKey::ParamBlendAmountDesc),
+                kind: SettingKind::Percentage { logarithmic: false },
+                id: setting_id::COLOR_A,
             },
             SettingDescriptor {
                 label_key: ExTrKey::ParamBlendAttenuation,

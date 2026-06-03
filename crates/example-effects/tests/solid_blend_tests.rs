@@ -38,7 +38,7 @@ fn full_alpha_is_solid_color_normal() {
     let width = 2;
     let height = 2;
     let len = width * height * 4;
-    let src = vec![50u8; len];
+    let src = vec![255u8; len];
     let mut dst = vec![0u8; len];
     effect.apply_effect(&src, &mut dst, width, height);
 
@@ -176,8 +176,8 @@ fn different_dimensions_work() {
 fn solid_blend_descriptors_count() {
     let list = example_effects::settings::SettingsList::<SolidColorBlendFullSettings>::new();
     let all: Vec<_> = list.all_descriptors().collect();
-    // 3 descriptors: ColorRGBA, blend_attenuation, blend_mode
-    assert_eq!(all.len(), 3, "should have 3 descriptors");
+    // 4 descriptors: ColorRGB, blend_amount, blend_attenuation, blend_mode
+    assert_eq!(all.len(), 4, "should have 4 descriptors");
 }
 
 #[test]

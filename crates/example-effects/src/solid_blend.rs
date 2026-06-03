@@ -6,7 +6,7 @@ use crate::RECIP_255;
 impl SolidColorBlend {
     /// Blend the entire image with a solid color using the selected blend mode.
     ///
-    /// The buffer is RGBA interleaved, 1 byte per channel.
+    /// The buffer is RGBA interleaved, 1 byte per channel. Straight alpha.
     pub fn apply_effect(&self, src: &[u8], dst: &mut [u8], width: usize, height: usize) {
         let len = width * height * 4;
         if src.len() < len || dst.len() < len || width == 0 || height == 0 {
@@ -15,7 +15,6 @@ impl SolidColorBlend {
 
         let a = self.color_a.clamp(0.0, 1.0);
 
-        // Fast path: no blend
         if a == 0.0 {
             dst[..len].copy_from_slice(&src[..len]);
             return;
@@ -28,7 +27,7 @@ impl SolidColorBlend {
             }));
             match gpu_result {
                 Ok(Ok(true)) => return,
-                _ => {} // GPU unavailable — fall through to CPU
+                _ => {}
             }
         }
 

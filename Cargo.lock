@@ -2052,6 +2052,7 @@ dependencies = [
  "example-effects",
  "pipl",
  "premiere",
+ "winres",
 ]
 
 [[package]]
