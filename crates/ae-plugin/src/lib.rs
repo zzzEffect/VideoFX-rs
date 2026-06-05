@@ -43,6 +43,9 @@ macro_rules! effect_entry {
             output: *mut ae::sys::PF_LayerDef,
             extra: *mut std::ffi::c_void,
         ) -> ae::sys::PF_Err {
+            if in_data.is_null() || out_data.is_null() {
+                return ae::sys::PF_Err::BAD_CALLBACK_PARAM;
+            }
             ACTIVE_EFFECT.store($eff as u8, Ordering::Release);
             unsafe { EffectMain(cmd, in_data, out_data, params, output, extra) }
         }
@@ -327,6 +330,11 @@ impl Plugin {
         mut out_layer: Layer,
         params: &mut Parameters<ParamID>,
     ) -> Result<(), Error> {
+        // Only 8-bit BGRA frames are supported.
+        if in_layer.bit_depth() != 8 {
+            return Err(Error::BadCallbackParameter);
+        }
+
         let src_row_bytes = in_layer.row_bytes();
         let height = in_layer.height().min(out_layer.height()) as usize;
         let width = in_layer.width().min(out_layer.width()) as usize;
@@ -338,6 +346,11 @@ impl Plugin {
             -src_row_bytes as usize
         };
 
+        // AE's `buffer()` always returns a contiguous slice, but for bottom-up
+        // images (negative `row_bytes`) the rows are in reverse order inside
+        // that slice. Detect bottom-up so we can read/write in the correct order.
+        let is_bottom_up = src_row_bytes < 0;
+
         let row_bytes = width * pixel_size;
         let total = width * height * 4;
 
@@ -346,11 +359,15 @@ impl Plugin {
 
         let mut src_contig = vec![0u8; total];
         for y in 0..height {
-            let src_offset = y * src_stride;
+            let src_row = if is_bottom_up {
+                (height - 1 - y) * src_stride
+            } else {
+                y * src_stride
+            };
             let dst_offset = y * row_bytes;
             unsafe {
                 std::ptr::copy_nonoverlapping(
-                    src_buf.as_ptr().add(src_offset),
+                    src_buf.as_ptr().add(src_row),
                     src_contig.as_mut_ptr().add(dst_offset),
                     row_bytes,
                 );
@@ -385,12 +402,16 @@ impl Plugin {
         }
 
         for y in 0..height {
-            let src_offset = y * src_stride;
-            let dst_offset = y * row_bytes;
+            let dst_row = if is_bottom_up {
+                (height - 1 - y) * src_stride
+            } else {
+                y * src_stride
+            };
+            let src_offset = y * row_bytes;
             unsafe {
                 std::ptr::copy_nonoverlapping(
-                    dst_contig.as_ptr().add(dst_offset),
-                    dst_buf.as_mut_ptr().add(src_offset),
+                    dst_contig.as_ptr().add(src_offset),
+                    dst_buf.as_mut_ptr().add(dst_row),
                     row_bytes,
                 );
             }

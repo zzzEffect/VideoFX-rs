@@ -1,6 +1,6 @@
 # VideoFX-rs — Rust Video Plugin Framework
 
-A general-purpose framework for building cross-host video effect plugins in Rust. Derived from [ntsc-rs](https://github.com/valadaptive/ntsc-rs), VideoFX-rs provides the infrastructure for creating effects that target After Effects, Premiere, OpenFX hosts (such as VEGAS Pro, DaVinci Resolve), and AviUtl2 (ExEdit2).
+A general-purpose framework for building cross-host video effect plugins in Rust. Derived from [ntsc-rs](https://github.com/valadaptive/ntsc-rs), VideoFX-rs provides the infrastructure for creating effects that target After Effects, Premiere, AviUtl2, and OpenFX hosts (such as VEGAS Pro, DaVinci Resolve, etc.).
 
 ## Structure
 
@@ -176,9 +176,12 @@ The proc-macro crate (`crates/macros/`, package `video-fx-macros`) provides `#[d
 
 ### OpenFX
 
-Copy `crates/openfx-plugin/build/VideoFx.ofx.bundle/` to your OFX host's plugins directory:
+Copy `crates/openfx-plugin/build/VideoFx.ofx.bundle/` to the common OFX path:
+- **Common OFX Path**: `C:\Program Files\Common Files\OFX\Plugins\`
+
+In addition to the common path, some hosts will also have their specific OFX paths:
+- **VEGAS Pro**: `...<VEGAS install path>\OFX Video Plug-Ins\` (such as `C:\Program Files\VEGAS\VEGAS Pro 22.0\OFX Video Plug-Ins\`)
 - **DaVinci Resolve**: `C:\ProgramData\Blackmagic Design\DaVinci Resolve\Support\OFXPlugins\`
-- **Natron**: `C:\Program Files\Common Files\OFX\Plugins\`
 
 The bundle contains both effects under the **"VideoFX Example"** category.
 

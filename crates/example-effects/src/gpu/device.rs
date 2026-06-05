@@ -13,7 +13,7 @@ pub fn get_or_init_shared_device() -> Result<(&'static wgpu::Device, &'static wg
         return Err("GPU unavailable".to_string());
     }
     static INIT_LOCK: Mutex<()> = Mutex::new(());
-    let _guard = INIT_LOCK.lock().map_err(|_| "init lock poisoned".to_string())?;
+    let _guard = INIT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     if let (Some(d), Some(q)) = (SHARED_DEVICE.get(), SHARED_QUEUE.get()) {
         return Ok((d, q));
     }

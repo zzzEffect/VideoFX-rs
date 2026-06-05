@@ -134,6 +134,32 @@ struct SharedData<T: Settings> {
 
 type OfxResult<T> = Result<T, OfxStatus>;
 
+/// RAII guard that calls `clipReleaseImage` on drop, preventing handle leaks on
+/// early returns (e.g. via `?`) after `clipGetImage` succeeds.
+struct ImageGuard {
+    img: OfxPropertySetHandle,
+    release_fn: unsafe extern "C" fn(OfxPropertySetHandle) -> OfxStatus,
+}
+
+impl ImageGuard {
+    unsafe fn new(
+        img: OfxPropertySetHandle,
+        release_fn: unsafe extern "C" fn(OfxPropertySetHandle) -> OfxStatus,
+    ) -> Self {
+        Self { img, release_fn }
+    }
+}
+
+impl Drop for ImageGuard {
+    fn drop(&mut self) {
+        if !self.img.is_null() {
+            unsafe {
+                (self.release_fn)(self.img);
+            }
+        }
+    }
+}
+
 impl<T: Settings<Key = ExTrKey> + Clone + Default> SharedData<T> {
     pub unsafe fn new(host_info: HostInfo) -> OfxResult<Self> {
         let property_suite = (host_info.fetch_suite)(
@@ -276,11 +302,19 @@ unsafe fn set_host_info_inner<T: Settings<Key = ExTrKey> + Clone + Default>(
 }
 
 unsafe extern "C" fn set_host_info_ca(host: *mut OfxHost) {
-    let _ = set_host_info_inner::<ColorAdjustmentFullSettings>(host, &SHARED_CA);
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if let Err(ref e) = set_host_info_inner::<ColorAdjustmentFullSettings>(host, &SHARED_CA) {
+            eprintln!("VideoFX-rs CA: set_host_info failed: {e:?}");
+        }
+    }));
 }
 
 unsafe extern "C" fn set_host_info_sb(host: *mut OfxHost) {
-    let _ = set_host_info_inner::<SolidColorBlendFullSettings>(host, &SHARED_SB);
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if let Err(ref e) = set_host_info_inner::<SolidColorBlendFullSettings>(host, &SHARED_SB) {
+            eprintln!("VideoFX-rs SB: set_host_info failed: {e:?}");
+        }
+    }));
 }
 
 // ---------------------------------------------------------------------------
@@ -293,7 +327,10 @@ unsafe extern "C" fn main_entry_ca(
     inArgs: OfxPropertySetHandle,
     outArgs: OfxPropertySetHandle,
 ) -> OfxStatus {
-    main_entry_generic::<ColorAdjustmentKind>(action, handle, inArgs, outArgs)
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        main_entry_generic::<ColorAdjustmentKind>(action, handle, inArgs, outArgs)
+    }))
+    .unwrap_or(OfxStat::kOfxStatFailed)
 }
 
 unsafe extern "C" fn main_entry_sb(
@@ -302,7 +339,10 @@ unsafe extern "C" fn main_entry_sb(
     inArgs: OfxPropertySetHandle,
     outArgs: OfxPropertySetHandle,
 ) -> OfxStatus {
-    main_entry_generic::<SolidBlendKind>(action, handle, inArgs, outArgs)
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        main_entry_generic::<SolidBlendKind>(action, handle, inArgs, outArgs)
+    }))
+    .unwrap_or(OfxStat::kOfxStatFailed)
 }
 
 unsafe fn main_entry_generic<K: EffectKind>(
@@ -675,17 +715,25 @@ unsafe fn action_render_generic<K: EffectKind>(
     let mut dstClip: OfxImageClipHandle = ptr::null_mut();
     clipGetHandle(effect, c"Output".as_ptr(), &mut dstClip, ptr::null_mut()).ofx_ok()?;
 
-    // Get images
+    // Get images — wrapped in RAII guards so they are released on every exit path
     let mut srcImg: OfxPropertySetHandle = ptr::null_mut();
     clipGetImage(srcClip, time, ptr::null(), &mut srcImg).ofx_ok()?;
+    let _src_guard = ImageGuard::new(srcImg, clipReleaseImage);
     let mut dstImg: OfxPropertySetHandle = ptr::null_mut();
     clipGetImage(dstClip, time, ptr::null(), &mut dstImg).ofx_ok()?;
+    let _dst_guard = ImageGuard::new(dstImg, clipReleaseImage);
 
     // Get image data pointers
     let mut srcPtr: *mut c_void = ptr::null_mut();
     propGetPointer(srcImg, kOfxImagePropData.as_ptr(), 0, &mut srcPtr).ofx_ok()?;
+    if srcPtr.is_null() {
+        return Err(OfxStat::kOfxStatFailed);
+    }
     let mut dstPtr: *mut c_void = ptr::null_mut();
     propGetPointer(dstImg, kOfxImagePropData.as_ptr(), 0, &mut dstPtr).ofx_ok()?;
+    if dstPtr.is_null() {
+        return Err(OfxStat::kOfxStatFailed);
+    }
 
     // Get row bytes and bounds
     let mut srcRowBytes: c_int = 0;
@@ -722,6 +770,17 @@ unsafe fn action_render_generic<K: EffectKind>(
         }
     })()
     .unwrap_or(4);
+
+    // Validate row strides against actual pixel size
+    let bytes_per_pixel = match depth {
+        4 => 4usize,
+        8 => 8usize,
+        _ => 16usize,
+    };
+    let min_row_bytes = width * bytes_per_pixel;
+    if src_stride < min_row_bytes || dst_stride < min_row_bytes {
+        return Err(OfxStat::kOfxStatFailed);
+    }
 
     let row_bytes_u8 = width * 4;
     let total_u8 = row_bytes_u8 * height;
@@ -762,11 +821,12 @@ unsafe fn action_render_generic<K: EffectKind>(
 
     // OFX hosts (e.g. VEGAS) use premultiplied alpha; effect works in straight.
     // Convert premultiplied → straight before, and straight → premultiplied after.
+    // Skip identity case (alpha = 255 or 0) to avoid float div/mul.
     {
         for px in src_buf.chunks_exact_mut(4) {
-            let a_byte = px[3] as f32;
-            if a_byte > 0.0 {
-                let recip = 255.0 / a_byte;
+            let a = px[3];
+            if a != 0 && a != 255 {
+                let recip = 255.0 / a as f32;
                 px[0] = (px[0] as f32 * recip).clamp(0.0, 255.0).round() as u8;
                 px[1] = (px[1] as f32 * recip).clamp(0.0, 255.0).round() as u8;
                 px[2] = (px[2] as f32 * recip).clamp(0.0, 255.0).round() as u8;
@@ -778,10 +838,13 @@ unsafe fn action_render_generic<K: EffectKind>(
 
     {
         for px in dst_buf.chunks_exact_mut(4) {
-            let a = px[3] as f32 * (1.0 / 255.0);
-            px[0] = (px[0] as f32 * a).clamp(0.0, 255.0).round() as u8;
-            px[1] = (px[1] as f32 * a).clamp(0.0, 255.0).round() as u8;
-            px[2] = (px[2] as f32 * a).clamp(0.0, 255.0).round() as u8;
+            let a = px[3];
+            if a != 255 {
+                let af = a as f32 * (1.0 / 255.0);
+                px[0] = (px[0] as f32 * af).clamp(0.0, 255.0).round() as u8;
+                px[1] = (px[1] as f32 * af).clamp(0.0, 255.0).round() as u8;
+                px[2] = (px[2] as f32 * af).clamp(0.0, 255.0).round() as u8;
+            }
         }
     }
 
@@ -816,8 +879,6 @@ unsafe fn action_render_generic<K: EffectKind>(
         }
     }
 
-    clipReleaseImage(srcImg).ofx_ok()?;
-    clipReleaseImage(dstImg).ofx_ok()?;
     Ok(())
 }
 
@@ -851,7 +912,7 @@ unsafe fn map_params_generic<K: EffectKind>(
 
     for descriptor in setting_descriptors {
         let mut paramProps: OfxPropertySetHandle = ptr::null_mut();
-        let descriptor_strings = data.strings.get(&descriptor.id).unwrap();
+        let descriptor_strings = data.strings.get(&descriptor.id).ok_or(OfxStat::kOfxStatFailed)?;
         let descriptor_id_cstr = descriptor_strings.0.as_c_str();
 
         match &descriptor.kind {
@@ -872,7 +933,7 @@ unsafe fn map_params_generic<K: EffectKind>(
                     let item_strings = data
                         .menu_item_strings
                         .get(&(descriptor.id.clone(), menu_item.index))
-                        .unwrap();
+                        .ok_or(OfxStat::kOfxStatFailed)?;
                     let item_label_cstr = item_strings.0.as_c_str();
                     propSetString(
                         paramProps,
@@ -980,7 +1041,7 @@ unsafe fn map_params_generic<K: EffectKind>(
                 let group_name_cstr = descriptor_strings
                     .3
                     .as_ref()
-                    .expect("Group name is None")
+                    .ok_or(OfxStat::kOfxStatFailed)?
                     .as_c_str();
                 paramDefine(
                     param_set,
@@ -1064,7 +1125,7 @@ unsafe fn map_params_generic<K: EffectKind>(
         }
 
         if !paramProps.is_null() {
-            let descriptor_strings = data.strings.get(&descriptor.id).unwrap();
+            let descriptor_strings = data.strings.get(&descriptor.id).ok_or(OfxStat::kOfxStatFailed)?;
             let descriptor_label_cstr = descriptor_strings.1.as_c_str();
             propSetString(
                 paramProps,
@@ -1110,7 +1171,7 @@ unsafe fn apply_params_generic<K: EffectKind>(
         .ok_or(OfxStat::kOfxStatFailed)?;
 
     for descriptor in setting_descriptors {
-        let descriptor_strings = data.strings.get(&descriptor.id).unwrap();
+        let descriptor_strings = data.strings.get(&descriptor.id).ok_or(OfxStat::kOfxStatFailed)?;
         let descriptor_id_cstr = descriptor_strings.0.as_c_str();
 
         match &descriptor.kind {
@@ -1124,7 +1185,7 @@ unsafe fn apply_params_generic<K: EffectKind>(
                     &descriptor.id,
                     EnumValue(options[selected_idx as usize].index),
                 )
-                .unwrap();
+                .map_err(|_| OfxStat::kOfxStatFailed)?;
             }
             SettingKind::Percentage { .. } => {
                 let mut param: OfxParamHandle = ptr::null_mut();
@@ -1132,7 +1193,7 @@ unsafe fn apply_params_generic<K: EffectKind>(
                     .ofx_ok()?;
                 let mut value: f64 = 0.0;
                 paramGetValueAtTime(param, time, &mut value).ofx_ok()?;
-                dst.set_field::<f32>(&descriptor.id, value as f32).unwrap();
+                dst.set_field::<f32>(&descriptor.id, value as f32).map_err(|_| OfxStat::kOfxStatFailed)?;
             }
             SettingKind::IntRange { .. } => {
                 let mut param: OfxParamHandle = ptr::null_mut();
@@ -1140,7 +1201,7 @@ unsafe fn apply_params_generic<K: EffectKind>(
                     .ofx_ok()?;
                 let mut value: c_int = 0;
                 paramGetValueAtTime(param, time, &mut value).ofx_ok()?;
-                dst.set_field::<i32>(&descriptor.id, value).unwrap();
+                dst.set_field::<i32>(&descriptor.id, value).map_err(|_| OfxStat::kOfxStatFailed)?;
             }
             SettingKind::FloatRange { .. } => {
                 let mut param: OfxParamHandle = ptr::null_mut();
@@ -1148,7 +1209,7 @@ unsafe fn apply_params_generic<K: EffectKind>(
                     .ofx_ok()?;
                 let mut value: f64 = 0.0;
                 paramGetValueAtTime(param, time, &mut value).ofx_ok()?;
-                dst.set_field::<f32>(&descriptor.id, value as f32).unwrap();
+                dst.set_field::<f32>(&descriptor.id, value as f32).map_err(|_| OfxStat::kOfxStatFailed)?;
             }
             SettingKind::Boolean => {
                 let mut param: OfxParamHandle = ptr::null_mut();
@@ -1156,7 +1217,7 @@ unsafe fn apply_params_generic<K: EffectKind>(
                     .ofx_ok()?;
                 let mut value: c_int = 0;
                 paramGetValueAtTime(param, time, &mut value).ofx_ok()?;
-                dst.set_field::<bool>(&descriptor.id, value != 0).unwrap();
+                dst.set_field::<bool>(&descriptor.id, value != 0).map_err(|_| OfxStat::kOfxStatFailed)?;
             }
             SettingKind::Group { children } => {
                 let mut param: OfxParamHandle = ptr::null_mut();
@@ -1164,7 +1225,7 @@ unsafe fn apply_params_generic<K: EffectKind>(
                     .ofx_ok()?;
                 let mut value: c_int = 0;
                 paramGetValueAtTime(param, time, &mut value).ofx_ok()?;
-                dst.set_field::<bool>(&descriptor.id, value != 0).unwrap();
+                dst.set_field::<bool>(&descriptor.id, value != 0).map_err(|_| OfxStat::kOfxStatFailed)?;
 
                 apply_params_generic::<K>(data, param_set, time, children, dst)?;
             }
@@ -1175,10 +1236,10 @@ unsafe fn apply_params_generic<K: EffectKind>(
                 let mut r: f64 = 0.0; let mut g: f64 = 0.0;
                 let mut b: f64 = 0.0; let mut a: f64 = 0.0;
                 paramGetValueAtTime(param, time, &mut r, &mut g, &mut b, &mut a).ofx_ok()?;
-                dst.set_field::<f32>(r_id, r as f32).unwrap();
-                dst.set_field::<f32>(g_id, g as f32).unwrap();
-                dst.set_field::<f32>(b_id, b as f32).unwrap();
-                dst.set_field::<f32>(a_id, a as f32).unwrap();
+                dst.set_field::<f32>(r_id, r as f32).map_err(|_| OfxStat::kOfxStatFailed)?;
+                dst.set_field::<f32>(g_id, g as f32).map_err(|_| OfxStat::kOfxStatFailed)?;
+                dst.set_field::<f32>(b_id, b as f32).map_err(|_| OfxStat::kOfxStatFailed)?;
+                dst.set_field::<f32>(a_id, a as f32).map_err(|_| OfxStat::kOfxStatFailed)?;
             }
             SettingKind::ColorRGB { r_id, g_id, b_id } => {
                 let mut param: OfxParamHandle = ptr::null_mut();
@@ -1186,9 +1247,9 @@ unsafe fn apply_params_generic<K: EffectKind>(
                     .ofx_ok()?;
                 let mut r: f64 = 0.0; let mut g: f64 = 0.0; let mut b: f64 = 0.0;
                 paramGetValueAtTime(param, time, &mut r, &mut g, &mut b).ofx_ok()?;
-                dst.set_field::<f32>(r_id, r as f32).unwrap();
-                dst.set_field::<f32>(g_id, g as f32).unwrap();
-                dst.set_field::<f32>(b_id, b as f32).unwrap();
+                dst.set_field::<f32>(r_id, r as f32).map_err(|_| OfxStat::kOfxStatFailed)?;
+                dst.set_field::<f32>(g_id, g as f32).map_err(|_| OfxStat::kOfxStatFailed)?;
+                dst.set_field::<f32>(b_id, b as f32).map_err(|_| OfxStat::kOfxStatFailed)?;
             }
         }
     }

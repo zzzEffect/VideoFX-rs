@@ -40,6 +40,7 @@ struct Bufs {
     uniform: wgpu::Buffer,
     dst: wgpu::Buffer,
     staging: wgpu::Buffer,
+    src_packed: Vec<u32>,
     w: u32,
     h: u32,
 }
@@ -85,13 +86,13 @@ pub fn try_color_adjustment_gpu_render(
 
     let image_size = (total * 4) as u64;
 
-    // Pack u8 RGBA → u32
-    let src_packed: Vec<u32> = src[..image_size as usize]
-        .chunks_exact(4)
-        .map(|c| {
-            (c[3] as u32) << 24 | (c[2] as u32) << 16 | (c[1] as u32) << 8 | c[0] as u32
-        })
-        .collect();
+    // Pack u8 RGBA → u32 — reuse pre-allocated buffer
+    let n = total;
+    g.bufs.src_packed.resize(n, 0);
+    for (i, c) in src[..image_size as usize].chunks_exact(4).enumerate() {
+        g.bufs.src_packed[i] =
+            (c[3] as u32) << 24 | (c[2] as u32) << 16 | (c[1] as u32) << 8 | c[0] as u32;
+    }
 
     let contrast = settings
         .advanced
@@ -118,7 +119,7 @@ pub fn try_color_adjustment_gpu_render(
     };
 
     g.queue
-        .write_buffer(&g.bufs.src, 0, bytemuck::cast_slice(&src_packed));
+        .write_buffer(&g.bufs.src, 0, bytemuck::cast_slice(&g.bufs.src_packed));
     g.queue
         .write_buffer(&g.bufs.uniform, 0, bytemuck::bytes_of(&uniforms));
 
@@ -276,6 +277,7 @@ fn create_bufs(device: &wgpu::Device, w: u32, h: u32) -> Bufs {
             usage: st,
             mapped_at_creation: false,
         }),
+        src_packed: Vec::with_capacity(n as usize),
         w,
         h,
     }

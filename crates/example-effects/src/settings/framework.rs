@@ -281,7 +281,7 @@ impl<T: Settings> sval::Value for SettingsAndList<'_, '_, T> {
                     for (id, name) in [(r_id, "color_r"), (g_id, "color_g"), (b_id, "color_b"), (a_id, "color_a")] {
                         stream.map_key_begin()?; stream.text_begin(Some(name.len()))?; stream.text_fragment(name)?; stream.text_end()?; stream.map_key_end()?;
                         stream.map_value_begin()?;
-                        stream.f32(self.settings.get_field::<f32>(id).unwrap())?;
+                        stream.f32(self.settings.get_field::<f32>(id).map_err(|_e| sval::Error::new())?)?;
                         stream.map_value_end()?;
                     }
                 }
@@ -289,7 +289,7 @@ impl<T: Settings> sval::Value for SettingsAndList<'_, '_, T> {
                     for (id, name) in [(r_id, "tint_r"), (g_id, "tint_g"), (b_id, "tint_b")] {
                         stream.map_key_begin()?; stream.text_begin(Some(name.len()))?; stream.text_fragment(name)?; stream.text_end()?; stream.map_key_end()?;
                         stream.map_value_begin()?;
-                        stream.f32(self.settings.get_field::<f32>(id).unwrap())?;
+                        stream.f32(self.settings.get_field::<f32>(id).map_err(|_e| sval::Error::new())?)?;
                         stream.map_value_end()?;
                     }
                 }
@@ -297,10 +297,22 @@ impl<T: Settings> sval::Value for SettingsAndList<'_, '_, T> {
                     stream.map_key_begin()?; stream.text_begin(Some(descriptor.id.name.len()))?; stream.text_fragment(descriptor.id.name)?; stream.text_end()?; stream.map_key_end()?;
                     stream.map_value_begin()?;
                     match &descriptor.kind {
-                        SettingKind::Enumeration { .. } => stream.u32(self.settings.get_field::<EnumValue>(&descriptor.id).unwrap().0)?,
-                        SettingKind::Percentage { .. } | SettingKind::FloatRange { .. } => stream.f32(self.settings.get_field::<f32>(&descriptor.id).unwrap())?,
-                        SettingKind::IntRange { .. } => stream.i32(self.settings.get_field::<i32>(&descriptor.id).unwrap())?,
-                        SettingKind::Boolean | SettingKind::Group { .. } => stream.bool(self.settings.get_field::<bool>(&descriptor.id).unwrap())?,
+                        SettingKind::Enumeration { .. } => {
+                            let val = self.settings.get_field::<EnumValue>(&descriptor.id).map_err(|_e| sval::Error::new())?;
+                            stream.u32(val.0)?
+                        }
+                        SettingKind::Percentage { .. } | SettingKind::FloatRange { .. } => {
+                            let val = self.settings.get_field::<f32>(&descriptor.id).map_err(|_e| sval::Error::new())?;
+                            stream.f32(val)?
+                        }
+                        SettingKind::IntRange { .. } => {
+                            let val = self.settings.get_field::<i32>(&descriptor.id).map_err(|_e| sval::Error::new())?;
+                            stream.i32(val)?
+                        }
+                        SettingKind::Boolean | SettingKind::Group { .. } => {
+                            let val = self.settings.get_field::<bool>(&descriptor.id).map_err(|_e| sval::Error::new())?;
+                            stream.bool(val)?
+                        }
                         _ => {}
                     }
                     stream.map_value_end()?;

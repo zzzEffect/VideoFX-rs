@@ -43,9 +43,9 @@ pub fn lang() -> Lang {
 pub fn tr(key: ExTrKey) -> &'static str {
     match lang() {
         Lang::En => key.en(),
-        Lang::ZhCn => zh_cn::translate_cstr(key).to_str().unwrap(),
-        Lang::Ja => ja::translate_cstr(key).to_str().unwrap(),
-        Lang::Ko => ko::translate_cstr(key).to_str().unwrap(),
+        Lang::ZhCn => zh_cn::translate_cstr(key).to_str().unwrap_or("(invalid UTF-8)"),
+        Lang::Ja => ja::translate_cstr(key).to_str().unwrap_or("(invalid UTF-8)"),
+        Lang::Ko => ko::translate_cstr(key).to_str().unwrap_or("(invalid UTF-8)"),
     }
 }
 

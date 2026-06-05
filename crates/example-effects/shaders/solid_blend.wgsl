@@ -24,7 +24,7 @@ fn blend_alpha_channel(src_a: f32, a: f32, inv: f32, blend_mode: u32) -> f32 {
         2u => src_a * inv + (1.0 - (1.0 - src_a) * (1.0 - a)) * a,
         3u => {
             let ov = select(1.0 - 2.0 * (1.0 - src_a) * (1.0 - a), 2.0 * src_a * a, src_a < 0.5);
-            src_a * inv + ov * a;
+            src_a * inv + ov * a
         }
         default => src_a,
     };

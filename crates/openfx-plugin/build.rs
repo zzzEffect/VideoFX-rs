@@ -5,6 +5,16 @@ fn main() {
     // Tell cargo to invalidate the built crate whenever the wrapper changes
     println!("cargo:rerun-if-changed=wrapper.h");
 
+    // Check that the OpenFX C SDK submodule is initialized
+    if !std::path::Path::new("wrapper.h").exists() {
+        panic!(
+            "OpenFX C SDK submodule not found.\n\
+             wrapper.h is missing — did you initialize git submodules?\n\
+             Run: git submodule update --init --recursive\n\
+             Then retry the build."
+        );
+    }
+
     println!(
         "cargo:rustc-env=TARGET={}",
         std::env::var("TARGET").unwrap()
