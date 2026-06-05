@@ -44,7 +44,7 @@ macro_rules! effect_entry {
             extra: *mut std::ffi::c_void,
         ) -> ae::sys::PF_Err {
             if in_data.is_null() || out_data.is_null() {
-                return ae::sys::PF_Err::BAD_CALLBACK_PARAM;
+                return ae::sys::PF_Err_BAD_CALLBACK_PARAM;
             }
             ACTIVE_EFFECT.store($eff as u8, Ordering::Release);
             unsafe { EffectMain(cmd, in_data, out_data, params, output, extra) }
