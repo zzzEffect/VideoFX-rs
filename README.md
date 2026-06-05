@@ -71,7 +71,7 @@ If you're not building the OpenFX plugin, you can ignore this part.
 Make sure to include submodules when cloning the repository if you want the OpenFX plugin to build properly:
 
 ```bash
-git clone --recurse-submodules https://github.com/zzzEffect/VideoFX-rs.git
+git clone --recurse-submodules https://github.com/zzzEffects/VideoFX-rs.git
 cd VideoFX-rs
 ```
 

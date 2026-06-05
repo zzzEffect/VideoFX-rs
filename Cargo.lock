@@ -11,7 +11,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 [[package]]
 name = "after-effects"
 version = "0.4.0"
-source = "git+https://github.com/zzzEffect/after-effects?branch=master#1a931d4c4da3ff541eee2e53ebc9f953a2801fe3"
+source = "git+https://github.com/zzzEffects/after-effects?branch=master#1a931d4c4da3ff541eee2e53ebc9f953a2801fe3"
 dependencies = [
  "after-effects-sys",
  "bincode",
@@ -1320,7 +1320,7 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 [[package]]
 name = "pipl"
 version = "0.1.1"
-source = "git+https://github.com/zzzEffect/after-effects?branch=master#1a931d4c4da3ff541eee2e53ebc9f953a2801fe3"
+source = "git+https://github.com/zzzEffects/after-effects?branch=master#1a931d4c4da3ff541eee2e53ebc9f953a2801fe3"
 dependencies = [
  "bitflags",
  "byteorder",
@@ -1378,7 +1378,7 @@ checksum = "439ee305def115ba05938db6eb1644ff94165c5ab5e9420d1c1bcedbba909391"
 [[package]]
 name = "premiere"
 version = "0.4.0"
-source = "git+https://github.com/zzzEffect/after-effects?branch=master#1a931d4c4da3ff541eee2e53ebc9f953a2801fe3"
+source = "git+https://github.com/zzzEffects/after-effects?branch=master#1a931d4c4da3ff541eee2e53ebc9f953a2801fe3"
 dependencies = [
  "base64",
  "bincode",
