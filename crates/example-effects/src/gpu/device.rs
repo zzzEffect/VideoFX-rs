@@ -13,7 +13,7 @@ pub fn get_or_init_shared_device() -> Result<(&'static wgpu::Device, &'static wg
         return Err("GPU unavailable".to_string());
     }
     static INIT_LOCK: Mutex<()> = Mutex::new(());
-    let _guard = INIT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = INIT_LOCK.lock().map_err(|_| "init lock poisoned".to_string())?;
     if let (Some(d), Some(q)) = (SHARED_DEVICE.get(), SHARED_QUEUE.get()) {
         return Ok((d, q));
     }
@@ -32,9 +32,49 @@ pub fn get_or_init_shared_device() -> Result<(&'static wgpu::Device, &'static wg
     })).map_err(|e| { SHARED_GPU_AVAILABLE.store(false, Ordering::Relaxed); format!("failed to create GPU device: {e}") })?;
     let _ = SHARED_DEVICE.set(device);
     let _ = SHARED_QUEUE.set(queue);
-    Ok((SHARED_DEVICE.get().unwrap(), SHARED_QUEUE.get().unwrap()))
+    Ok((
+        SHARED_DEVICE.get().ok_or_else(|| "device init race".to_string())?,
+        SHARED_QUEUE.get().ok_or_else(|| "queue init race".to_string())?,
+    ))
 }
 
 pub fn is_shared_device_ready() -> bool {
     SHARED_GPU_AVAILABLE.load(Ordering::Relaxed) && SHARED_DEVICE.get().is_some() && SHARED_QUEUE.get().is_some()
+}
+
+// ---------------------------------------------------------------------------
+// Shared GPU readback helper
+// ---------------------------------------------------------------------------
+
+/// Blocking GPU staging-buffer readback with timeout.
+/// Copies `image_size` bytes from `staging_buf` into `dst`.
+pub fn blocking_readback(
+    device: &wgpu::Device,
+    staging_buf: &wgpu::Buffer,
+    image_size: u64,
+    dst: &mut [u8],
+) -> Result<(), String> {
+    let staging_slice = staging_buf.slice(..image_size);
+    let (tx, rx) = std::sync::mpsc::channel();
+    staging_slice.map_async(wgpu::MapMode::Read, move |r| {
+        let _ = tx.send(r);
+    });
+    let _ = device.poll(wgpu::PollType::Wait {
+        submission_index: None,
+        timeout: Some(std::time::Duration::from_millis(100)),
+    });
+    match rx.recv_timeout(std::time::Duration::from_secs(5)) {
+        Ok(Ok(())) => {
+            let mapped = staging_slice.get_mapped_range();
+            let len = (image_size as usize).min(dst.len());
+            dst[..len].copy_from_slice(&mapped[..len]);
+            drop(mapped);
+            staging_buf.unmap();
+            Ok(())
+        }
+        _ => {
+            staging_buf.unmap();
+            Err("staging map failed".to_string())
+        }
+    }
 }

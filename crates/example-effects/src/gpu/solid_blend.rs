@@ -161,7 +161,7 @@ pub fn try_solid_blend_gpu_render(
 
     let _ = g.device.poll(wgpu::PollType::Wait {
         submission_index: None,
-        timeout: None,
+        timeout: Some(std::time::Duration::from_millis(100)),
     });
 
     let slice = g.bufs.staging.slice(..image_size);
@@ -171,10 +171,10 @@ pub fn try_solid_blend_gpu_render(
     });
     let _ = g.device.poll(wgpu::PollType::Wait {
         submission_index: None,
-        timeout: None,
+        timeout: Some(std::time::Duration::from_millis(100)),
     });
 
-    match rx.recv() {
+    match rx.recv_timeout(std::time::Duration::from_secs(5)) {
         Ok(Ok(())) => {
             let mapped = slice.get_mapped_range();
             // Unpack u32 → u8 RGBA
@@ -190,7 +190,10 @@ pub fn try_solid_blend_gpu_render(
             g.bufs.staging.unmap();
             Ok(true)
         }
-        _ => Err("staging map failed".to_string()),
+        _ => {
+            g.bufs.staging.unmap();
+            Err("staging map failed".to_string())
+        }
     }
 }
 

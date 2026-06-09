@@ -21,6 +21,11 @@ pub use aul2::{
 
 use params::build_config_items;
 
+thread_local! {
+    static RENDER_BUFS: std::cell::RefCell<(Vec<u8>, Vec<u8>)> =
+        std::cell::RefCell::new((Vec::new(), Vec::new()));
+}
+
 #[aviutl2::plugin(GenericPlugin)]
 struct VideoFxPlugin {
     color_adjustment_filter: SubPlugin<ColorAdjustmentFilter>,
@@ -108,8 +113,16 @@ impl FilterPlugin for ColorAdjustmentFilter {
             return Ok(());
         }
         let len = w * h * 4;
-        let mut src = vec![0u8; len];
-        let mut dst = vec![0u8; len];
+        let (mut src, mut dst) = RENDER_BUFS.with(|cell| {
+            cell.try_borrow_mut()
+                .map(|mut guard| {
+                    guard.0.resize(len, 0);
+                    guard.1.resize(len, 0);
+                    let taken = std::mem::take(&mut *guard);
+                    taken
+                })
+                .unwrap_or_else(|_| (vec![0u8; len], vec![0u8; len]))
+        });
         video.get_image_data(&mut src);
         effect.apply_effect(&src, &mut dst, w, h);
         video.set_image_data(&dst, video.video_object.width, video.video_object.height);
@@ -223,8 +236,16 @@ impl FilterPlugin for BlendFilter {
             return Ok(());
         }
         let len = w * h * 4;
-        let mut src = vec![0u8; len];
-        let mut dst = vec![0u8; len];
+        let (mut src, mut dst) = RENDER_BUFS.with(|cell| {
+            cell.try_borrow_mut()
+                .map(|mut guard| {
+                    guard.0.resize(len, 0);
+                    guard.1.resize(len, 0);
+                    let taken = std::mem::take(&mut *guard);
+                    taken
+                })
+                .unwrap_or_else(|_| (vec![0u8; len], vec![0u8; len]))
+        });
         video.get_image_data(&mut src);
         effect.apply_effect(&src, &mut dst, w, h);
         video.set_image_data(&dst, video.video_object.width, video.video_object.height);

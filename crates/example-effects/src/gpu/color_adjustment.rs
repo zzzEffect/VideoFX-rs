@@ -175,7 +175,7 @@ pub fn try_color_adjustment_gpu_render(
 
     let _ = g.device.poll(wgpu::PollType::Wait {
         submission_index: None,
-        timeout: None,
+        timeout: Some(std::time::Duration::from_millis(100)),
     });
 
     let slice = g.bufs.staging.slice(..image_size);
@@ -185,10 +185,10 @@ pub fn try_color_adjustment_gpu_render(
     });
     let _ = g.device.poll(wgpu::PollType::Wait {
         submission_index: None,
-        timeout: None,
+        timeout: Some(std::time::Duration::from_millis(100)),
     });
 
-    match rx.recv() {
+    match rx.recv_timeout(std::time::Duration::from_secs(5)) {
         Ok(Ok(())) => {
             let mapped = slice.get_mapped_range();
             let dst_u32: &[u32] = bytemuck::cast_slice(&mapped);
@@ -203,7 +203,10 @@ pub fn try_color_adjustment_gpu_render(
             g.bufs.staging.unmap();
             Ok(true)
         }
-        _ => Err("staging map failed".to_string()),
+        _ => {
+            g.bufs.staging.unmap();
+            Err("staging map failed".to_string())
+        }
     }
 }
 

@@ -43,9 +43,9 @@ pub fn lang() -> Lang {
 pub fn tr(key: ExTrKey) -> &'static str {
     match lang() {
         Lang::En => key.en(),
-        Lang::ZhCn => zh_cn::translate_cstr(key).to_str().unwrap_or("(invalid UTF-8)"),
-        Lang::Ja => ja::translate_cstr(key).to_str().unwrap_or("(invalid UTF-8)"),
-        Lang::Ko => ko::translate_cstr(key).to_str().unwrap_or("(invalid UTF-8)"),
+        Lang::ZhCn => zh_cn::translate_cstr(key).to_str().unwrap_or_else(|_| key.en()),
+        Lang::Ja => ja::translate_cstr(key).to_str().unwrap_or_else(|_| key.en()),
+        Lang::Ko => ko::translate_cstr(key).to_str().unwrap_or_else(|_| key.en()),
     }
 }
 
@@ -132,6 +132,9 @@ pub fn detect_system_lang() -> Lang {
 
 #[cfg(target_os = "windows")]
 unsafe fn windows_locale_name(buf: &mut [u16]) -> u32 {
+    // SAFETY: GetUserDefaultLocaleName is a standard Win32 API. The buffer must be
+    // non-empty (LOCALE_NAME_MAX_LENGTH = 85 WCHARs minimum). Callers ensure this.
+    debug_assert!(!buf.is_empty(), "locale name buffer must be non-empty");
     unsafe extern "system" {
         fn GetUserDefaultLocaleName(lpLocaleName: *mut u16, cchLocaleName: i32) -> i32;
     }

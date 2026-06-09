@@ -17,7 +17,7 @@ fn main() {
 
     println!(
         "cargo:rustc-env=TARGET={}",
-        std::env::var("TARGET").unwrap()
+        std::env::var("TARGET").unwrap_or_else(|_| "unknown-target".to_string())
     );
 
     // The bindgen::Builder is the main entry point

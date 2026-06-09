@@ -182,7 +182,12 @@ pub trait Settings: Default {
     fn set_field<T: 'static + SettingField>(&mut self, id: &SettingID<Self>, value: T) -> Result<(), GetSetFieldError> {
         (id.set)(self, value.upcast())
     }
-    fn legacy_value() -> Self;
+    fn legacy_value() -> Self
+    where
+        Self: Default,
+    {
+        Self::default()
+    }
     fn setting_descriptors() -> Box<[SettingDescriptor<Self>]>;
 }
 

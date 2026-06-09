@@ -134,6 +134,110 @@ struct SharedData<T: Settings> {
 
 type OfxResult<T> = Result<T, OfxStatus>;
 
+fn safe_cstr(s: &str) -> CString {
+    CString::new(s).unwrap_or_else(|_| CString::new("").unwrap())
+}
+
+// ---------------------------------------------------------------------------
+// Pixel copy helpers — converts between host pixel formats and internal RGBA8.
+// OFX uses bottom-up coordinate convention (Y=0 at bottom); internal buffers
+// are top-down. The (height - 1 - y) row index handles the conversion.
+// ---------------------------------------------------------------------------
+
+unsafe fn copy_source_to_u8(
+    sp: *const c_void,
+    src_stride: usize,
+    dst: &mut [u8],
+    width: usize,
+    height: usize,
+    row_bytes_u8: usize,
+    depth: usize,
+) {
+    if src_stride < row_bytes_u8 {
+        return;
+    }
+    match depth {
+        4 => {
+            for y in 0..height {
+                let host_row = (sp as *const u8).add(y * src_stride);
+                let u8_row = dst.as_mut_ptr().add((height - 1 - y) * row_bytes_u8);
+                ptr::copy_nonoverlapping(host_row, u8_row, row_bytes_u8);
+            }
+        }
+        8 => {
+            for y in 0..height {
+                let host_row = (sp as *const u8).add(y * src_stride) as *const u16;
+                let u8_row = dst.as_mut_ptr().add((height - 1 - y) * row_bytes_u8);
+                for x in 0..(width * 4) {
+                    let v = *host_row.add(x) as u32;
+                    *u8_row.add(x) = ((v * 255 + 32767) / 65535) as u8;
+                }
+            }
+        }
+        _ => {
+            for y in 0..height {
+                let host_row = (sp as *const u8).add(y * src_stride) as *const f32;
+                let u8_row = dst.as_mut_ptr().add((height - 1 - y) * row_bytes_u8);
+                for x in 0..(width * 4) {
+                    let v = *host_row.add(x);
+                    *u8_row.add(x) = (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+                }
+            }
+        }
+    }
+}
+
+unsafe fn copy_u8_to_output(
+    src: &[u8],
+    dp: *mut c_void,
+    dst_stride: usize,
+    width: usize,
+    height: usize,
+    row_bytes_u8: usize,
+    depth: usize,
+) {
+    if dst_stride < row_bytes_u8 {
+        return;
+    }
+    match depth {
+        4 => {
+            for y in 0..height {
+                let u8_row = src.as_ptr().add(y * row_bytes_u8);
+                let host_row = (dp as *mut u8).add((height - 1 - y) * dst_stride);
+                ptr::copy_nonoverlapping(u8_row, host_row, row_bytes_u8);
+            }
+        }
+        8 => {
+            for y in 0..height {
+                let u8_row = src.as_ptr().add(y * row_bytes_u8);
+                let host_row = (dp as *mut u8).add((height - 1 - y) * dst_stride) as *mut u16;
+                for x in 0..(width * 4) {
+                    let v = *u8_row.add(x) as u16;
+                    *host_row.add(x) = (v << 8) | v;
+                }
+            }
+        }
+        _ => {
+            for y in 0..height {
+                let u8_row = src.as_ptr().add(y * row_bytes_u8);
+                let host_row = (dp as *mut u8).add((height - 1 - y) * dst_stride) as *mut f32;
+                for x in 0..(width * 4) {
+                    *host_row.add(x) = *u8_row.add(x) as f32 / 255.0;
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Per-frame buffer pool — avoids per-frame heap allocations
+// ---------------------------------------------------------------------------
+
+thread_local! {
+    static RENDER_BUFS: std::cell::RefCell<(Vec<u8>, Vec<u8>)> =
+        std::cell::RefCell::new((Vec::new(), Vec::new()));
+}
+
 /// RAII guard that calls `clipReleaseImage` on drop, preventing handle leaks on
 /// early returns (e.g. via `?`) after `clipGetImage` succeeds.
 struct ImageGuard {
@@ -154,7 +258,7 @@ impl Drop for ImageGuard {
     fn drop(&mut self) {
         if !self.img.is_null() {
             unsafe {
-                (self.release_fn)(self.img);
+                let _ = (self.release_fn)(self.img);
             }
         }
     }
@@ -183,13 +287,13 @@ impl<T: Settings<Key = ExTrKey> + Clone + Default> SharedData<T> {
         let mut menu_item_strings = HashMap::new();
         for descriptor in settings_list.all_descriptors() {
             let id = &descriptor.id;
-            let id_str = CString::new(descriptor.id.name).unwrap();
-            let label = CString::new(i18n::tr(descriptor.label_key)).unwrap();
+            let id_str = safe_cstr(descriptor.id.name);
+            let label = safe_cstr(i18n::tr(descriptor.label_key));
             let description = descriptor
                 .description_key
-                .map(|k| CString::new(i18n::tr(k)).unwrap());
+                .map(|k| safe_cstr(i18n::tr(k)));
             let group_name = if let SettingKind::Group { .. } = descriptor.kind {
-                Some(CString::new(format!("{}_group", descriptor.id.name)).unwrap())
+                Some(safe_cstr(&format!("{}_group", descriptor.id.name)))
             } else {
                 None
             };
@@ -197,14 +301,14 @@ impl<T: Settings<Key = ExTrKey> + Clone + Default> SharedData<T> {
 
             if let SettingKind::Enumeration { options } = &descriptor.kind {
                 for menu_item in options {
-                    let item_label = CString::new(i18n::tr(menu_item.label_key)).unwrap();
+                    let item_label = safe_cstr(i18n::tr(menu_item.label_key));
                     menu_item_strings.insert(
                         (id.clone(), menu_item.index),
                         (
                             item_label,
                             menu_item
                                 .description_key
-                                .map(|k| CString::new(i18n::tr(k)).unwrap()),
+                                .map(|k| safe_cstr(i18n::tr(k))),
                         ),
                     );
                 }
@@ -784,40 +888,18 @@ unsafe fn action_render_generic<K: EffectKind>(
 
     let row_bytes_u8 = width * 4;
     let total_u8 = row_bytes_u8 * height;
-    let mut src_buf = vec![0u8; total_u8];
-    let mut dst_buf = vec![0u8; total_u8];
+    let (mut src_buf, mut dst_buf) = RENDER_BUFS.with(|cell| {
+        cell.try_borrow_mut()
+            .map(|mut guard| {
+                guard.0.resize(total_u8, 0);
+                guard.1.resize(total_u8, 0);
+                let taken = std::mem::take(&mut *guard);
+                taken
+            })
+            .unwrap_or_else(|_| (vec![0u8; total_u8], vec![0u8; total_u8]))
+    });
 
-    match depth {
-        4 => {
-            for y in 0..height {
-                ptr::copy_nonoverlapping(
-                    (srcPtr as *const u8).add(y * src_stride),
-                    src_buf.as_mut_ptr().add(y * row_bytes_u8),
-                    row_bytes_u8,
-                );
-            }
-        }
-        8 => {
-            for y in 0..height {
-                let host_row = (srcPtr as *const u8).add(y * src_stride) as *const u16;
-                let u8_row = src_buf.as_mut_ptr().add(y * row_bytes_u8);
-                for x in 0..(width * 4) {
-                    let v = *host_row.add(x) as u32;
-                    *u8_row.add(x) = ((v * 255 + 32767) / 65535) as u8;
-                }
-            }
-        }
-        _ => {
-            for y in 0..height {
-                let host_row = (srcPtr as *const u8).add(y * src_stride) as *const f32;
-                let u8_row = src_buf.as_mut_ptr().add(y * row_bytes_u8);
-                for x in 0..(width * 4) {
-                    let v = *host_row.add(x);
-                    *u8_row.add(x) = (v.clamp(0.0, 1.0) * 255.0).round() as u8;
-                }
-            }
-        }
-    }
+    copy_source_to_u8(srcPtr, src_stride, &mut src_buf, width, height, row_bytes_u8, depth);
 
     // OFX hosts (e.g. VEGAS) use premultiplied alpha; effect works in straight.
     // Convert premultiplied → straight before, and straight → premultiplied after.
@@ -848,36 +930,7 @@ unsafe fn action_render_generic<K: EffectKind>(
         }
     }
 
-    match depth {
-        4 => {
-            for y in 0..height {
-                ptr::copy_nonoverlapping(
-                    dst_buf.as_ptr().add(y * row_bytes_u8),
-                    (dstPtr as *mut u8).add(y * dst_stride),
-                    row_bytes_u8,
-                );
-            }
-        }
-        8 => {
-            for y in 0..height {
-                let u8_row = dst_buf.as_ptr().add(y * row_bytes_u8);
-                let host_row = (dstPtr as *mut u8).add(y * dst_stride) as *mut u16;
-                for x in 0..(width * 4) {
-                    let v = *u8_row.add(x) as u16;
-                    *host_row.add(x) = (v << 8) | v;
-                }
-            }
-        }
-        _ => {
-            for y in 0..height {
-                let u8_row = dst_buf.as_ptr().add(y * row_bytes_u8);
-                let host_row = (dstPtr as *mut u8).add(y * dst_stride) as *mut f32;
-                for x in 0..(width * 4) {
-                    *host_row.add(x) = *u8_row.add(x) as f32 / 255.0;
-                }
-            }
-        }
-    }
+    copy_u8_to_output(&dst_buf, dstPtr, dst_stride, width, height, row_bytes_u8, depth);
 
     Ok(())
 }
